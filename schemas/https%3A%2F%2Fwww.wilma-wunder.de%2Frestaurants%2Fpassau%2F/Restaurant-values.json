@@ -1,0 +1,47 @@
+{
+  "type": "Restaurant",
+  "name": null,
+  "review": [
+    {
+      "type": "Review",
+      "reviewBody": "Tolles Ambiente, aufmerksamer Service und das Essen war\n        hervorragend – wir kommen auf jeden Fall wieder!",
+      "reviewRating": "5/5",
+      "author": "Julia K.",
+      "comment": [
+        {
+          "type": "Comment",
+          "text": "Kann ich nur bestätigen, war letzte Woche auch dort und war\n            begeistert!",
+          "author": {
+            "type": "Person",
+            "name": "Markus B."
+          }
+        },
+        {
+          "type": "Comment",
+          "text": "Essen war okay, allerdings mussten wir recht lange auf einen\n            Tisch warten.",
+          "author": {
+            "type": "Person",
+            "name": "Sabine T."
+          }
+        },
+        {
+          "type": "Comment",
+          "text": "Bei uns war der Service leider unfreundlich und die Portionen\n            eher klein für den Preis.",
+          "author": {
+            "type": "Person",
+            "name": "Frank H."
+          }
+        }
+      ],
+      "sentiment": "Positive: Optimistic tone"
+    },
+    {
+      "type": "Review",
+      "reviewBody": "Keine schöne Location und schlechtes Essen, die Parkplatzsuche\n        in der Nähe war mühsam!",
+      "reviewRating": "4/5",
+      "author": "Thomas R.",
+      "comment": [],
+      "sentiment": "Negative: Critical tone"
+    }
+  ]
+}

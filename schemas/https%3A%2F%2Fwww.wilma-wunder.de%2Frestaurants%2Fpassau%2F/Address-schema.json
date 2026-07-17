@@ -10,9 +10,9 @@
       "dataType": "string",
       "selectorCandidates": [
         "[data-hook=\"address-street\"]",
-        ".address-street"
-      ],
-      "value": "Schrottgasse 12"
+        ".css-4h1j2k p.address-street",
+        ".comp-l9x2k0p .css-4h1j2k p.address-street"
+      ]
     },
     {
       "name": "postalCode",
@@ -20,9 +20,9 @@
       "dataType": "string",
       "selectorCandidates": [
         "[data-hook=\"address-postal\"]",
-        ".address-postal"
-      ],
-      "value": "94032"
+        ".comp-l9x2k0p .css-4h1j2k p.address-postal",
+        ".comp-l9x2k0p .css-4h1j2k span.address-postal"
+      ]
     },
     {
       "name": "addressCountry",
@@ -30,9 +30,9 @@
       "dataType": "string",
       "selectorCandidates": [
         "[data-hook=\"address-country\"]",
-        ".address-country"
-      ],
-      "value": "Germany"
+        ".comp-l9x2k0p .css-4h1j2k p.address-country",
+        ".comp-l9x2k0p .css-4h1j2k span.address-country"
+      ]
     }
   ]
 }

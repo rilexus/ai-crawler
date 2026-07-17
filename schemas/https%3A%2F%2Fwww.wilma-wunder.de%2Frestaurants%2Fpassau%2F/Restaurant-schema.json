@@ -1,0 +1,126 @@
+{
+  "name": "Restaurant",
+  "url": "https://www.wilma-wunder.de/restaurants/passau/",
+  "entityType": "Restaurant",
+  "classifications": [],
+  "fields": [
+    {
+      "name": "name",
+      "description": "The name of the restaurant on the page",
+      "dataType": "string",
+      "selectorCandidates": [
+        "[title]",
+        "[alt=\"Zwo20 Logo\"]",
+        "[class*=\"comp-l8k2j9x1\"][alt=\"Zwo20 Logo\"]"
+      ]
+    },
+    {
+      "name": "review",
+      "entityType": "Review",
+      "description": "The reviews of the restaurant",
+      "dataType": "array",
+      "selectorCandidates": [
+        "article[data-hook=\"review\"]",
+        "section.reviews article[data-hook=\"review\"]",
+        ".reviews > article[data-hook=\"review\"]",
+        "article.review[data-hook=\"review\"]"
+      ],
+      "classifications": [
+        {
+          "type": "sentiment",
+          "description": "Content tone",
+          "options": [
+            {
+              "title": "Positive",
+              "definition": "Optimistic tone"
+            },
+            {
+              "title": "Negative",
+              "definition": "Critical tone"
+            },
+            {
+              "title": "Neutral",
+              "definition": "Balanced tone"
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "name": "reviewBody",
+          "description": "The text of the review",
+          "dataType": "string",
+          "selectorCandidates": [
+            "[data-hook=\"review\"] .review-body",
+            "[data-hook=\"review\"] p.review-body"
+          ]
+        },
+        {
+          "name": "reviewRating",
+          "description": "The rating given in this review.",
+          "dataType": "string",
+          "selectorCandidates": [
+            "[data-hook=\"review\"] .review-rating",
+            "[data-hook=\"review\"] p.review-rating"
+          ]
+        },
+        {
+          "name": "author",
+          "description": "Author of the review",
+          "dataType": "string",
+          "selectorCandidates": [
+            "[data-hook=\"review\"] .review-author",
+            "[data-hook=\"review\"] p.review-author"
+          ]
+        },
+        {
+          "name": "comment",
+          "entityType": "Comment",
+          "description": "Comments of other users to the review",
+          "dataType": "array",
+          "selectorCandidates": [
+            "article[data-hook=\"comment\"]",
+            "section.comments article[data-hook=\"comment\"]",
+            ".comments > article[data-hook=\"comment\"]",
+            "[data-hook=\"comment\"].comment"
+          ],
+          "classifications": [],
+          "fields": [
+            {
+              "name": "text",
+              "description": "The text of the comment",
+              "dataType": "string",
+              "selectorCandidates": [
+                "[data-hook=\"comment\"] p:not(.qwewer1):not(.op0p3d)",
+                "[data-hook=\"comment\"] > p:nth-child(2)",
+                "[data-hook=\"comment\"] .op0p3d",
+                "[data-hook=\"comment\"] p[lang=\"de\"]"
+              ]
+            },
+            {
+              "name": "author",
+              "entityType": "Person",
+              "description": "The author of the comment",
+              "dataType": "object",
+              "selectorCandidates": [],
+              "classifications": [],
+              "fields": [
+                {
+                  "name": "name",
+                  "description": "The authors name of the review comment",
+                  "dataType": "string",
+                  "selectorCandidates": [
+                    ".qwewer1",
+                    "[class*=\"qw\"]",
+                    "article[data-hook=\"comment\"] p:first-child",
+                    "p[class^=\"q\"]"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -48,6 +48,40 @@ Respond ONLY with JSON, no prose, keyed by field name:
   }
 }
 
+async function extractContainer({ field, html }) {
+  const prompt = `You are locating a repeating list of elements in HTML for a web scraper.
+Here is the page HTML:
+\`\`\`html
+${html || ""}
+\`\`\`
+Find the container element that repeats once per item for: "${field.name}" - ${field.description}
+
+Propose up to 4 candidate CSS selectors (best first) that would each select ALL of the
+repeating container elements (one match per item), not the text inside them. Prefer
+attribute-based selectors (data-hook, etc.) over class names, since class names on this site
+are auto-generated and unstable.
+
+Respond ONLY with JSON, no prose:
+{"candidates": ["<selector>"]}`;
+
+  const { text } = await generateText({
+    model: lmstudio(process.env.MODEL_NAME || "local-model"),
+    prompt,
+  });
+
+  const json = text
+    .trim()
+    .replace(/^```(?:json)?\n?/, "")
+    .replace(/\n?```$/, "");
+
+  try {
+    const { candidates = [] } = JSON.parse(json);
+    return candidates;
+  } catch {
+    return [];
+  }
+}
+
 async function generateClassifycation({ classyfication, fields }) {
   const { type, description, options } = classyfication;
 
@@ -89,6 +123,105 @@ async function persistSchema(schema) {
   );
 }
 
+async function persistValues(schema, values) {
+  const dir = path.join("schemas", encodeURIComponent(schema.url));
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(
+    path.join(dir, `${encodeURIComponent(schema.name)}-values.json`),
+    JSON.stringify(values, null, 2),
+  );
+}
+
+async function assignSelectorCandidates(fields, html) {
+  const leafFields = fields.filter(
+    (field) => field.dataType !== "object" && field.dataType !== "array",
+  );
+
+  if (leafFields.length) {
+    const results = await extractFields({ fields: leafFields, html });
+
+    for (const field of leafFields) {
+      const { candidates: selectorCandidates = [] } = results[field.name] ?? {};
+      field.selectorCandidates = selectorCandidates;
+    }
+  }
+
+  for (const field of fields) {
+    if (field.dataType === "object" && field.fields?.length) {
+      await assignSelectorCandidates(field.fields, html);
+    }
+
+    if (field.dataType === "array" && field.fields?.length) {
+      field.selectorCandidates = await extractContainer({ field, html });
+
+      const $ = cheerio.load(html);
+      const containerSelector = field.selectorCandidates.find(
+        (selector) => $(selector).length,
+      );
+      const itemHtml = containerSelector
+        ? $.html($(containerSelector).first())
+        : html;
+
+      await assignSelectorCandidates(field.fields, itemHtml);
+    }
+  }
+}
+
+async function resolveFields($, fields, classifications = []) {
+  const values = {};
+
+  for (const field of fields) {
+    if (field.dataType === "object" && field.fields?.length) {
+      values[field.name] = {
+        type: field.entityType,
+        ...(await resolveFields($, field.fields, field.classifications)),
+      };
+      continue;
+    }
+
+    if (field.dataType === "array" && field.fields?.length) {
+      const containerSelector = field.selectorCandidates.find(
+        (selector) => $(selector).length,
+      );
+      const containers = containerSelector ? $(containerSelector).toArray() : [];
+
+      values[field.name] = [];
+      for (const container of containers) {
+        const $item = cheerio.load($.html(container));
+        values[field.name].push({
+          type: field.entityType,
+          ...(await resolveFields($item, field.fields, field.classifications)),
+        });
+      }
+      continue;
+    }
+
+    let value = null;
+    for (const selector of field.selectorCandidates) {
+      const el = $(selector).first();
+      const text = el.text().trim();
+      if (el.length && text) {
+        value = text;
+        break;
+      }
+    }
+    values[field.name] = value;
+  }
+
+  for (const classyfication of classifications) {
+    const fieldValues = fields.map(({ name }) => ({
+      name,
+      value: values[name],
+    }));
+    values[classyfication.type] = await generateClassifycation({
+      classyfication,
+      fields: fieldValues,
+    });
+  }
+
+  return values;
+}
+
 class SchemaBuilder {
   constructor(schema) {
     this.schema = schema;
@@ -99,14 +232,24 @@ class SchemaBuilder {
     return this;
   }
 
-  field(name, description, type) {
-    this.schema.fields.push({
+  field(name, description, type, extraction) {
+    const field = {
       name,
+      ...(typeof extraction === "function" ? { entityType: null } : {}),
       description,
       dataType: type,
       selectorCandidates: [],
-      value: null,
-    });
+    };
+
+    if (typeof extraction === "function") {
+      const nested = { entityType: null, classifications: [], fields: [] };
+      extraction(new SchemaBuilder(nested));
+      field.entityType = nested.entityType;
+      field.classifications = nested.classifications;
+      field.fields = nested.fields;
+    }
+
+    this.schema.fields.push(field);
     return this;
   }
 
@@ -115,7 +258,6 @@ class SchemaBuilder {
       type,
       description,
       options,
-      value: null,
     });
     return this;
   }
@@ -152,14 +294,7 @@ class CrawlerClient {
         "utf8",
       );
 
-      const results = await extractFields({ fields, html });
-
-      for (const field of fields) {
-        const { value = null, candidates: selectorCandidates = [] } =
-          results[field.name] ?? {};
-
-        field.selectorCandidates = selectorCandidates;
-      }
+      await assignSelectorCandidates(fields, html);
     }
     return this;
   }
@@ -175,29 +310,12 @@ class CrawlerClient {
 
       const $ = cheerio.load(html);
 
-      for (const field of fields) {
-        const { selectorCandidates } = field;
-        let value = null;
+      const values = {
+        type: schema.entityType,
+        ...(await resolveFields($, fields, schema.classifications)),
+      };
 
-        for (const selector of selectorCandidates) {
-          const el = $(selector).first();
-          if (el.length) {
-            value = el.text().trim();
-            break;
-          }
-        }
-
-        field.value = value;
-      }
-
-      for (const classyfication of schema.classifications) {
-        const { fields } = schema;
-        classyfication.value = await generateClassifycation({
-          classyfication,
-          fields,
-        });
-      }
-
+      await persistValues(schema, values);
       await persistSchema(schema);
     }
   }
