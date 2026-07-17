@@ -1,10 +1,9 @@
 {
   "name": "ai-crawler",
   "version": "0.1.0",
-  "description": "Self-healing selector-based crawler prototype: LLM-authored schema.org JSON-LD + CSS selector map, kept in sync by a cheap periodic crawl, with LLM-assisted repair only on selector failure.",
-  "main": "crawler.js",
+  "description": "LLM-assisted web extraction: a fluent builder declares entities/fields (including nested objects and repeating arrays), the LLM proposes CSS selectors, and each candidate is verified against the page before values are persisted.",
+  "main": "index.js",
   "scripts": {
-    "crawl": "tsx --env-file=.env crawler.js",
     "dev": "tsx --env-file=.env index.js"
   },
   "devDependencies": {
