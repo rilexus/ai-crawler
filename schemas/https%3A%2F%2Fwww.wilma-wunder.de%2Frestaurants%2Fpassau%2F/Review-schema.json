@@ -1,0 +1,58 @@
+{
+  "name": "Review",
+  "url": "https://www.wilma-wunder.de/restaurants/passau/",
+  "entityType": "Review",
+  "classifications": [
+    {
+      "type": "sentiment",
+      "description": "Content tone",
+      "options": [
+        {
+          "title": "Positive",
+          "definition": "Optimistic tone"
+        },
+        {
+          "title": "Negative",
+          "definition": "Critical tone"
+        },
+        {
+          "title": "Neutral",
+          "definition": "Balanced tone"
+        }
+      ],
+      "value": "Positive: Optimistic tone"
+    }
+  ],
+  "fields": [
+    {
+      "name": "reviewBody",
+      "description": "The text of the review",
+      "dataType": "string",
+      "selectorCandidates": [
+        "[data-hook=\"review\"] p.asdad222ads",
+        "[data-hook=\"review\"] .asdad222ads"
+      ],
+      "value": "Tolles Ambiente, aufmerksamer Service und das Essen war\n        hervorragend – wir kommen auf jeden Fall wieder!"
+    },
+    {
+      "name": "reviewRating",
+      "description": "The rating given in this review.",
+      "dataType": "string",
+      "selectorCandidates": [
+        "[data-hook=\"review\"] .wae22",
+        "[data-hook=\"review\"] p.wae22"
+      ],
+      "value": "5/5"
+    },
+    {
+      "name": "author",
+      "description": "Author of the review",
+      "dataType": "string",
+      "selectorCandidates": [
+        "[data-hook=\"review\"] .asdfgf",
+        "[data-hook=\"review\"] p.asdfgf"
+      ],
+      "value": "Julia K."
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "name": "Address",
+  "url": "https://www.wilma-wunder.de/restaurants/passau/",
+  "entityType": "PostalAddress",
+  "classifications": [],
+  "fields": [
+    {
+      "name": "streetAddress",
+      "description": "Street name",
+      "dataType": "string",
+      "selectorCandidates": [
+        "[data-hook=\"address-street\"]",
+        ".address-street"
+      ],
+      "value": "Schrottgasse 12"
+    },
+    {
+      "name": "postalCode",
+      "description": "Postal code",
+      "dataType": "string",
+      "selectorCandidates": [
+        "[data-hook=\"address-postal\"]",
+        ".address-postal"
+      ],
+      "value": "94032"
+    },
+    {
+      "name": "addressCountry",
+      "description": "Country name",
+      "dataType": "string",
+      "selectorCandidates": [
+        "[data-hook=\"address-country\"]",
+        ".address-country"
+      ],
+      "value": "Germany"
+    }
+  ]
+}

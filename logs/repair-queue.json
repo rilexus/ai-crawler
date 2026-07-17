@@ -1,0 +1,11 @@
+[
+  {
+    "fieldId": "name",
+    "jsonldPath": "name",
+    "queuedAt": "2026-07-16T09:35:28.768Z",
+    "reason": "no selector (primary or fallback) produced a valid value",
+    "resolved": true,
+    "resolvedSelector": "meta[property='og:title']",
+    "resolvedAt": "2026-07-16T09:35:28.768Z"
+  }
+]
