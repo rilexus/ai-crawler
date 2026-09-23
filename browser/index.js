@@ -110,4 +110,4 @@ async function loadPageFromUrl(url) {
   };
 }
 
-export { launchBrowser, generatePDFfromURL, loadPageFromUrl };
+module.exports = { launchBrowser, generatePDFfromURL, loadPageFromUrl };

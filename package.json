@@ -15,8 +15,10 @@
     "@sparticuz/chromium-min": "^147.0.0",
     "ai": "^7.0.28",
     "cheerio": "^1.1.2",
+    "markitdown-ts": "^0.0.10",
     "puppeteer": "^25.3.0",
-    "puppeteer-core": "^25.3.0"
+    "puppeteer-core": "^25.3.0",
+    "zod": "^3.25.76"
   },
   "license": "UNLICENSED"
 }

@@ -1,14 +1,44 @@
 const fs = require("fs/promises");
 const path = require("path");
-const { generateText } = require("ai");
-const { loadPageFromUrl } = require("./browser");
+const { generateText, Output } = require("ai");
+// const { loadPageFromUrl } = require("./browser");
 const { createOpenAICompatible } = require("@ai-sdk/openai-compatible");
 const cheerio = require("cheerio");
+const { z } = require("zod");
 
-const lmstudio = createOpenAICompatible({
-  name: "lmstudio",
-  baseURL: `${process.env.MODEL_PROVIDER_URL}/v1`,
+const apiKey = process.env.DEEP_SEEK_API_KEY;
+const baseURL = `${process.env.DEEP_SEEK_API_URL}`;
+
+const deepseek = createOpenAICompatible({
+  name: "deepseek",
+  baseURL,
+  apiKey,
 });
+
+// Strips markup that never helps selector/value extraction (scripts, styles,
+// comments, svg internals, head) and unstable/noisy attributes (class, style,
+// event handlers) before the HTML is embedded in a prompt. Cuts prompt size
+// dramatically since it's resent on every extraction call at every nesting
+// level. Only used for the LLM prompt — real selector matching against the
+// page still runs against the original, unpruned HTML.
+function pruneHtml(html) {
+  if (!html) return "";
+
+  const withoutComments = html.replace(/<!--[\s\S]*?-->/g, "");
+  const $ = cheerio.load(withoutComments);
+
+  $("head, script, style, noscript, template, svg").remove();
+
+  $("*").each((_, el) => {
+    if (!el.attribs) return;
+    delete el.attribs.style;
+    for (const attr of Object.keys(el.attribs)) {
+      if (attr.startsWith("on")) delete el.attribs[attr];
+    }
+  });
+
+  return $.html().replace(/\s+/g, " ").trim();
+}
 
 async function extractFields({ fields, html }) {
   const fieldList = fields
@@ -18,31 +48,47 @@ async function extractFields({ fields, html }) {
   const prompt = `You are extracting information from HTML for a web scraper.
 Here is the page HTML:
 \`\`\`html
-${html || ""}
+${pruneHtml(html)}
 \`\`\`
 Extract these fields from the HTML:
 ${fieldList}
 
-For each field, pick the most fitting value for the HTML. Use null for anything you can't find —
-do not invent data. Then propose up to 4 candidate CSS selectors (best first) that would select
+For each field, pick the most fitting value form the HTML. Use null for anything you can't find —
+do not invent data. Then propose up to 1 candidate CSS selector that would select
 that exact value in the HTML above. Prefer attribute-based selectors (href, src, alt, data-hook)
 over class names, since class names on this site are auto-generated and unstable.
 
-Respond ONLY with JSON, no prose, keyed by field name:
-{"<fieldName>": {"value": "...", "candidates": ["<selector>"]}}`;
+Respond with only a JSON object, no other text, shaped exactly like this (one entry per field,
+"candidates" holding up to 2 selector string):
+{ ${fields.map(({ name }) => `"${name}": { "value": string | null, "candidates": string[] }`).join(", ")} }`;
 
-  const { text } = await generateText({
-    model: lmstudio(process.env.MODEL_NAME || "local-model"),
-    prompt,
-  });
-
-  const json = text
-    .trim()
-    .replace(/^```(?:json)?\n?/, "")
-    .replace(/\n?```$/, "");
+  const schema = z.object(
+    Object.fromEntries(
+      fields.map(({ name, description }) => [
+        name,
+        z.object({
+          value: z
+            .string()
+            .nullable()
+            .describe(`value that is most fitting for "${description}"`),
+          candidates: z
+            .array(
+              z.string().describe(`CSS selector for ${name}: ${description}`),
+            )
+            .max(2)
+            .describe(`Array of CSS selectors for ${name}: ${description}`),
+        }),
+      ]),
+    ),
+  );
 
   try {
-    return JSON.parse(json);
+    const { output } = await generateText({
+      model: deepseek(process.env.DEEP_SEEK_MODEL_NAME || "deepseek-chat"),
+      prompt,
+      output: Output.object({ schema }),
+    });
+    return output;
   } catch {
     return {};
   }
@@ -52,7 +98,7 @@ async function extractContainer({ field, html }) {
   const prompt = `You are locating a repeating list of elements in HTML for a web scraper.
 Here is the page HTML:
 \`\`\`html
-${html || ""}
+${pruneHtml(html)}
 \`\`\`
 Find the container element that repeats once per item for: "${field.name}" - ${field.description}
 
@@ -61,22 +107,20 @@ repeating container elements (one match per item), not the text inside them. Pre
 attribute-based selectors (data-hook, etc.) over class names, since class names on this site
 are auto-generated and unstable.
 
-Respond ONLY with JSON, no prose:
-{"candidates": ["<selector>"]}`;
+Respond with only a JSON object, no other text, shaped exactly like this:
+{ "candidates": string[] }`;
 
-  const { text } = await generateText({
-    model: lmstudio(process.env.MODEL_NAME || "local-model"),
-    prompt,
+  const schema = z.object({
+    candidates: z.array(z.string()).max(4),
   });
 
-  const json = text
-    .trim()
-    .replace(/^```(?:json)?\n?/, "")
-    .replace(/\n?```$/, "");
-
   try {
-    const { candidates = [] } = JSON.parse(json);
-    return candidates;
+    const { output } = await generateText({
+      model: deepseek(process.env.DEEP_SEEK_MODEL_NAME || "deepseek-chat"),
+      prompt,
+      output: Output.object({ schema }),
+    });
+    return output.candidates;
   } catch {
     return [];
   }
@@ -103,15 +147,15 @@ ${fieldSummary}
 Choose exactly one of these options that best fits:
 ${optionList}
 
-Respond ONLY with the chosen option's exact text, no prose, no quotes.`;
+Respond with a JSON object matching the requested schema.`;
 
-  const { text } = await generateText({
-    model: lmstudio(process.env.MODEL_NAME || "local-model"),
+  const { output } = await generateText({
+    model: deepseek(process.env.DEEP_SEEK_MODEL_NAME || "deepseek-chat"),
     prompt,
+    output: Output.choice({ options: options.map(({ title }) => title) }),
   });
 
-  const value = text.trim();
-  return value;
+  return output;
 }
 
 async function persistSchema(schema) {
@@ -183,7 +227,9 @@ async function resolveFields($, fields, classifications = []) {
       const containerSelector = field.selectorCandidates.find(
         (selector) => $(selector).length,
       );
-      const containers = containerSelector ? $(containerSelector).toArray() : [];
+      const containers = containerSelector
+        ? $(containerSelector).toArray()
+        : [];
 
       values[field.name] = [];
       for (const container of containers) {
