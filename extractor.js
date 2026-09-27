@@ -1,7 +1,6 @@
 const fs = require("fs/promises");
 const path = require("path");
 const { generateText, Output } = require("ai");
-// const { loadPageFromUrl } = require("./browser");
 const { createOpenAICompatible } = require("@ai-sdk/openai-compatible");
 const cheerio = require("cheerio");
 const { z } = require("zod");
@@ -158,8 +157,8 @@ Respond with a JSON object matching the requested schema.`;
   return output;
 }
 
-async function persistSchema(schema) {
-  const dir = path.join("schemas", encodeURIComponent(schema.url));
+async function persistSchema(schema, url) {
+  const dir = path.join("schemas", encodeURIComponent(url));
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(
     path.join(dir, `${encodeURIComponent(schema.name)}-schema.json`),
@@ -167,13 +166,21 @@ async function persistSchema(schema) {
   );
 }
 
-async function persistValues(schema, values) {
-  const dir = path.join("schemas", encodeURIComponent(schema.url));
+async function persistValues(schema, url, values) {
+  const dir = path.join("schemas", encodeURIComponent(url));
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(
     path.join(dir, `${encodeURIComponent(schema.name)}-values.json`),
     JSON.stringify(values, null, 2),
   );
+}
+
+// Appends new selector candidates to a field, skipping duplicates, so calls
+// for several pages build up one list.
+function addSelectorCandidates(field, candidates) {
+  field.selectorCandidates = [
+    ...new Set([...(field.selectorCandidates ?? []), ...candidates]),
+  ];
 }
 
 async function assignSelectorCandidates(fields, html) {
@@ -185,8 +192,8 @@ async function assignSelectorCandidates(fields, html) {
     const results = await extractFields({ fields: leafFields, html });
 
     for (const field of leafFields) {
-      const { candidates: selectorCandidates = [] } = results[field.name] ?? {};
-      field.selectorCandidates = selectorCandidates;
+      const { candidates = [] } = results[field.name] ?? {};
+      addSelectorCandidates(field, candidates);
     }
   }
 
@@ -196,7 +203,7 @@ async function assignSelectorCandidates(fields, html) {
     }
 
     if (field.dataType === "array" && field.fields?.length) {
-      field.selectorCandidates = await extractContainer({ field, html });
+      addSelectorCandidates(field, await extractContainer({ field, html }));
 
       const $ = cheerio.load(html);
       const containerSelector = field.selectorCandidates.find(
@@ -245,7 +252,7 @@ async function resolveFields($, fields, classifications = []) {
     let value = null;
     for (const selector of field.selectorCandidates) {
       const el = $(selector).first();
-      const text = el.text().trim();
+      const text = el.text().replace(/\s+/g, " ").trim();
       if (el.length && text) {
         value = text;
         break;
@@ -269,8 +276,11 @@ async function resolveFields($, fields, classifications = []) {
 }
 
 class SchemaBuilder {
+  id = null;
+
   constructor(schema) {
     this.schema = schema;
+    this.id = ""; // TODO: add uniqui, short id
   }
 
   entity(type) {
@@ -310,65 +320,135 @@ class SchemaBuilder {
 }
 
 class CrawlerClient {
-  constructor() {
-    this.schemas = [];
+  #browser;
+  /**
+   * @param {import("./browser")} browser The client takes ownership and
+   *   closes it when `run()` finishes.
+   */
+  constructor(browser) {
+    this.#browser = browser;
+    /**
+     * Steps by schema ID. `predefined` is true when `extraction` returned a
+     * ready-made schema with selector candidates, and false when the schema
+     * comes from the builder.
+     *
+     * @type {Map<string, { schema: object, predefined: boolean }>}
+     */
+    this.steps = new Map();
   }
 
+  /**
+   * Adds a step. A step with the same schema ID replaces the earlier one.
+   *
+   * @param {object} options
+   * @param {string} [options.id] ID of a builder schema. Defaults to `name`.
+   *   Predefined schemas carry their own `id`.
+   * @param {string} options.name
+   * @param {Array<string>} options.urls Pages to extract with this schema.
+   * @param {(builder: SchemaBuilder) => any} options.extraction
+   * @returns {this}
+   */
   extract(options) {
-    const { url, name, extraction } = options;
-    this.url = url;
+    const { id = options.name, urls, name, extraction } = options;
 
-    const schema = {
-      name,
-      url,
-      entityType: null,
-      classifications: [],
-      fields: [],
+    const step = {
+      predefined: false,
+      schema: {
+        id,
+        name,
+        urls,
+        entityType: null,
+        classifications: [],
+        fields: [],
+      },
     };
 
-    extraction(new SchemaBuilder(schema));
-    this.schemas.push(schema);
+    const result = extraction(new SchemaBuilder(step.schema));
+
+    // A returned SchemaBuilder (e.g. `return builder.entity(...)`) wraps the
+    // schema built above; anything else with a `schema` is predefined.
+    if (result?.schema && !(result instanceof SchemaBuilder)) {
+      step.predefined = true;
+      step.schema = { ...result.schema, urls };
+    }
+
+    this.steps.set(step.schema.id, step);
+
     return this;
   }
 
+  /**
+   * Generates selector candidates for builder schemas. Each of a schema's
+   * URLs adds its candidates to the same fields, so `run()` can fall back
+   * across layout variations. Predefined schemas already carry candidates
+   * and are skipped. Call before `run()`. Closes the browser on failure.
+   *
+   * @returns {Promise<this>}
+   */
   async create() {
-    for (const schema of this.schemas) {
-      const { fields, url } = schema;
-      // const { html } = await loadPageFromUrl(url);
-      const html = await fs.readFile(
-        path.join(__dirname, "fixtures", "restaurant-snapshot-v1.html"),
-        "utf8",
-      );
+    try {
+      for (const { schema, predefined } of this.steps.values()) {
+        if (predefined) continue;
 
-      await assignSelectorCandidates(fields, html);
+        for (const url of schema.urls) {
+          const html = await this.#browser.loadHTML(url);
+          await assignSelectorCandidates(schema.fields, html);
+        }
+        for (const url of schema.urls) {
+          await persistSchema(schema, url);
+        }
+      }
+    } catch (error) {
+      await this.#browser.close();
+      throw error;
     }
     return this;
   }
 
+  /**
+   * Extracts values from every URL of every step, one page after another,
+   * then closes the browser.
+   *
+   * @returns {Promise<Array<{ id: string, url: string, values: object }>>}
+   *   One entry per page, in insertion order.
+   */
   async run() {
-    for (const schema of this.schemas) {
-      const { url, fields, name } = schema;
-      // const { html } = await loadPageFromUrl(url);
-      const html = await fs.readFile(
-        path.join(__dirname, "fixtures", "restaurant-snapshot-v1.html"),
-        "utf8",
-      );
-
-      const $ = cheerio.load(html);
-
-      const values = {
-        type: schema.entityType,
-        ...(await resolveFields($, fields, schema.classifications)),
-      };
-
-      await persistValues(schema, values);
-      await persistSchema(schema);
+    try {
+      const results = [];
+      for (const { schema } of this.steps.values()) {
+        for (const url of schema.urls) {
+          const values = await this.#extractPage(schema, url);
+          results.push({ id: schema.id, url, values });
+        }
+      }
+      return results;
+    } finally {
+      await this.#browser.close();
     }
+  }
+
+  async #extractPage(schema, url) {
+    const { fields, entityType, classifications } = schema;
+    const html = await this.#browser.loadHTML(url);
+    // const html = await fs.readFile(
+    //   path.join(__dirname, "fixtures", "restaurant-snapshot-v1.html"),
+    //   "utf8",
+    // );
+
+    const $ = cheerio.load(html);
+
+    const values = {
+      type: entityType,
+      ...(await resolveFields($, fields, classifications)),
+    };
+
+    await persistValues(schema, url, values);
+    return values;
   }
 }
 
-function createClient() {
-  return new CrawlerClient();
+function createClient(browser) {
+  return new CrawlerClient(browser);
 }
 
 module.exports = { createClient };

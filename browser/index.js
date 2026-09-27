@@ -25,30 +25,20 @@ async function getChromiumPath() {
   return downloadPromise;
 }
 
-let browser = null;
-let browserReady = null;
-
-function resetBrowser() {
-  browser = null;
-  browserReady = null;
-}
-
-async function doLaunch() {
+async function launch() {
   if (process.platform !== "linux") {
     const { default: puppeteerFull } = await import("puppeteer");
-    const b = await puppeteerFull.launch({
+    return puppeteerFull.launch({
       headless: true,
       args: ["--ignore-certificate-errors"],
     });
-    b.on("disconnected", resetBrowser);
-    return b;
   }
 
   const executablePath = await getChromiumPath();
   const chromium = (await import("@sparticuz/chromium-min")).default;
   const puppeteer = await import("puppeteer-core");
 
-  const b = await puppeteer.launch({
+  return puppeteer.launch({
     args: [
       ...chromium.args,
       "--no-sandbox",
@@ -58,56 +48,77 @@ async function doLaunch() {
     executablePath,
     headless: true,
   });
-  b.on("disconnected", resetBrowser);
-  return b;
 }
 
-async function launchBrowser() {
-  if (browser) {
-    return browser;
+// A headless Chromium instance. It launches on first use, and `close()` shuts
+// it down. The Chromium process keeps Node alive until then.
+class Browser {
+  #launching = null;
+
+  async #instance() {
+    if (!this.#launching) {
+      const launching = launch().then(
+        (browser) => {
+          browser.on("disconnected", () => {
+            if (this.#launching === launching) this.#launching = null;
+          });
+          return browser;
+        },
+        (error) => {
+          if (this.#launching === launching) this.#launching = null;
+          throw error;
+        },
+      );
+      this.#launching = launching;
+    }
+    return this.#launching;
   }
-  if (!browserReady) {
-    browserReady = doLaunch()
-      .then((b) => {
-        browser = b;
-        return b;
-      })
-      .catch((err) => {
-        resetBrowser();
-        throw err;
-      });
+
+  async #withPage(url, callback) {
+    const browser = await this.#instance();
+    const page = await browser.newPage();
+
+    try {
+      await page.goto(url, { waitUntil: "networkidle0" });
+      return await callback(page);
+    } finally {
+      await page.close();
+    }
   }
-  return browserReady;
+
+  async loadHTML(url) {
+    return this.#withPage(url, async (page) => {
+      return page.content();
+    });
+  }
+
+  async loadPage(url) {
+    return this.#withPage(url, async (page) => {
+      return cheerio.load(await page.content());
+    });
+  }
+
+  async generatePDFfromURL(url) {
+    return this.#withPage(url, async (page) => {
+      await page.evaluate(`
+        Promise.all(
+          Array.from(document.images)
+            .filter(img => !img.complete)
+            .map(img => new Promise(resolve => { img.onload = img.onerror = resolve; }))
+        )
+      `);
+      return page.pdf({ printBackground: true, format: "A4" });
+    });
+  }
+
+  async close() {
+    // Clear before awaiting, so a page load that starts during shutdown
+    // launches a new instance instead of reusing the closing one.
+    const launching = this.#launching;
+    this.#launching = null;
+    const browser = await launching?.catch(() => null);
+    await browser?.close();
+  }
 }
 
-async function generatePDFfromURL(url) {
-  const browser = await launchBrowser();
-  const page = await browser.newPage();
-  await page.goto(url, { waitUntil: "networkidle0" });
-  await page.evaluate(`
-    Promise.all(
-      Array.from(document.images)
-        .filter(img => !img.complete)
-        .map(img => new Promise(resolve => { img.onload = img.onerror = resolve; }))
-    )
-  `);
-  const pdfBuffer = await page.pdf({ printBackground: true, format: "A4" });
-  await browser.close();
-  return pdfBuffer;
-}
-
-async function loadPageFromUrl(url) {
-  const browser = await launchBrowser();
-
-  const page = await browser.newPage();
-
-  await page.goto(url, { waitUntil: "networkidle0" });
-  const html = await page.content();
-
-  return {
-    page: cheerio.load(html),
-    html: html,
-  };
-}
-
-module.exports = { launchBrowser, generatePDFfromURL, loadPageFromUrl };
+module.exports = Browser;
