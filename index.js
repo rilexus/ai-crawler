@@ -100,43 +100,20 @@ const schema = {
 };
 
 async function main() {
-  const urls = [
-    "https://www.feinschmecker.de/restaurant/de/köln/neo|biota-6c",
-    "https://www.feinschmecker.de/weingut/de/st.-martin/wein-&-sekthaus-alois-kiefer---weingut-aloisiushof-3c",
-    "https://www.feinschmecker.de/baecker/de/staufen-im-breisgau/bäckerei-café-faller-fe",
-  ];
-
   const client = createClient(new Browser());
 
   const workflow = await client
     .extract({
       name: "café-faller-fe",
       urls: [
+        "https://www.feinschmecker.de/restaurant/de/köln/neo|biota-6c",
+        "https://www.feinschmecker.de/weingut/de/st.-martin/wein-&-sekthaus-alois-kiefer---weingut-aloisiushof-3c",
         "https://www.feinschmecker.de/baecker/de/staufen-im-breisgau/bäckerei-café-faller-fe",
       ],
       extraction: (builder) => {
         return builder
           .entity("Bäckerei")
           .field("name", "The name of the bakery.", "string");
-      },
-    })
-    .extract({
-      name: "aloisiushof",
-      urls: [
-        "https://www.feinschmecker.de/weingut/de/st.-martin/wein-&-sekthaus-alois-kiefer---weingut-aloisiushof-3c",
-      ],
-      extraction: (builder) =>
-        builder
-          .entity("Weingut")
-          .field("name", "The name of the winery.", "string"),
-    })
-    .extract({
-      name: "FoodEstablishment",
-      urls: ["https://www.feinschmecker.de/restaurant/de/köln/neo|biota-6c"],
-      extraction: () => {
-        return {
-          schema,
-        };
       },
     })
     .create();

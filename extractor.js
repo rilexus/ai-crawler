@@ -157,29 +157,43 @@ Respond with a JSON object matching the requested schema.`;
   return output;
 }
 
-async function persistSchema(schema, url) {
-  const dir = path.join("schemas", encodeURIComponent(url));
+async function writeJson(dir, name, data) {
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(
-    path.join(dir, `${encodeURIComponent(schema.name)}-schema.json`),
-    JSON.stringify(schema, null, 2),
+    path.join(dir, `${encodeURIComponent(name)}.json`),
+    JSON.stringify(data, null, 2),
   );
 }
 
-async function persistValues(schema, url, values) {
-  const dir = path.join("schemas", encodeURIComponent(url));
-  await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(
-    path.join(dir, `${encodeURIComponent(schema.name)}-values.json`),
-    JSON.stringify(values, null, 2),
-  );
+function persistSchema(schema) {
+  return writeJson("schemas", schema.id, schema);
 }
 
-// Appends new selector candidates to a field, skipping duplicates, so calls
-// for several pages build up one list.
+function pageDir(page) {
+  return path.join("pages", encodeURIComponent(page.url));
+}
+
+function persistPage(page) {
+  return writeJson(pageDir(page), "page-schema", page);
+}
+
+function persistValues(page, values) {
+  return writeJson(pageDir(page), "page-values", values);
+}
+
+// Copies a schema's field tree for one page, adding an empty selector list
+// to every field so each page learns its own selectors.
+function createPageFields(schemaFields) {
+  return schemaFields.map(({ fields, ...field }) => ({
+    ...field,
+    selectorCandidates: [],
+    ...(fields ? { fields: createPageFields(fields) } : {}),
+  }));
+}
+
 function addSelectorCandidates(field, candidates) {
   field.selectorCandidates = [
-    ...new Set([...(field.selectorCandidates ?? []), ...candidates]),
+    ...new Set([...field.selectorCandidates, ...candidates]),
   ];
 }
 
@@ -280,7 +294,6 @@ class SchemaBuilder {
 
   constructor(schema) {
     this.schema = schema;
-    this.id = ""; // TODO: add uniqui, short id
   }
 
   entity(type) {
@@ -294,7 +307,6 @@ class SchemaBuilder {
       ...(typeof extraction === "function" ? { entityType: null } : {}),
       description,
       dataType: type,
-      selectorCandidates: [],
     };
 
     if (typeof extraction === "function") {
@@ -327,22 +339,19 @@ class CrawlerClient {
    */
   constructor(browser) {
     this.#browser = browser;
-    /**
-     * Steps by schema ID. `predefined` is true when `extraction` returned a
-     * ready-made schema with selector candidates, and false when the schema
-     * comes from the builder.
-     *
-     * @type {Map<string, { schema: object, predefined: boolean }>}
-     */
-    this.steps = new Map();
+    /** @type {Record<string, object>} Schemas by ID. */
+    this.schemas = {};
+    /** @type {Record<string, { url: string, schemaId: string, fields: Array<object> }>} Pages by URL. */
+    this.pages = {};
   }
 
   /**
-   * Adds a step. A step with the same schema ID replaces the earlier one.
+   * Builds a schema and adds one page per URL. Each page gets its own copy
+   * of the schema's fields, so selectors learned on one website don't leak
+   * into another. A URL added again replaces its earlier page.
    *
    * @param {object} options
-   * @param {string} [options.id] ID of a builder schema. Defaults to `name`.
-   *   Predefined schemas carry their own `id`.
+   * @param {string} [options.id] Schema ID. Defaults to `name`.
    * @param {string} options.name
    * @param {Array<string>} options.urls Pages to extract with this schema.
    * @param {(builder: SchemaBuilder) => any} options.extraction
@@ -351,52 +360,45 @@ class CrawlerClient {
   extract(options) {
     const { id = options.name, urls, name, extraction } = options;
 
-    const step = {
-      predefined: false,
-      schema: {
-        id,
-        name,
-        urls,
-        entityType: null,
-        classifications: [],
-        fields: [],
-      },
+    const schema = {
+      id,
+      name,
+      entityType: null,
+      classifications: [],
+      fields: [],
     };
 
-    const result = extraction(new SchemaBuilder(step.schema));
+    extraction(new SchemaBuilder(schema));
 
-    // A returned SchemaBuilder (e.g. `return builder.entity(...)`) wraps the
-    // schema built above; anything else with a `schema` is predefined.
-    if (result?.schema && !(result instanceof SchemaBuilder)) {
-      step.predefined = true;
-      step.schema = { ...result.schema, urls };
+    this.schemas[schema.id] = schema;
+
+    for (const url of urls) {
+      this.pages[url] = {
+        url,
+        schemaId: schema.id,
+        fields: createPageFields(schema.fields),
+      };
     }
-
-    this.steps.set(step.schema.id, step);
 
     return this;
   }
 
   /**
-   * Generates selector candidates for builder schemas. Each of a schema's
-   * URLs adds its candidates to the same fields, so `run()` can fall back
-   * across layout variations. Predefined schemas already carry candidates
-   * and are skipped. Call before `run()`. Closes the browser on failure.
+   * Generates selector candidates for every page from that page's own HTML,
+   * then saves schemas to `schemas/` and pages to `pages/`. Call before
+   * `run()`. Closes the browser on failure.
    *
    * @returns {Promise<this>}
    */
   async create() {
     try {
-      for (const { schema, predefined } of this.steps.values()) {
-        if (predefined) continue;
-
-        for (const url of schema.urls) {
-          const html = await this.#browser.loadHTML(url);
-          await assignSelectorCandidates(schema.fields, html);
-        }
-        for (const url of schema.urls) {
-          await persistSchema(schema, url);
-        }
+      for (const schema of Object.values(this.schemas)) {
+        await persistSchema(schema);
+      }
+      for (const page of Object.values(this.pages)) {
+        const html = await this.#browser.loadHTML(page.url);
+        await assignSelectorCandidates(page.fields, html);
+        await persistPage(page);
       }
     } catch (error) {
       await this.#browser.close();
@@ -406,8 +408,8 @@ class CrawlerClient {
   }
 
   /**
-   * Extracts values from every URL of every step, one page after another,
-   * then closes the browser.
+   * Extracts values from every page, one after another, then closes the
+   * browser.
    *
    * @returns {Promise<Array<{ id: string, url: string, values: object }>>}
    *   One entry per page, in insertion order.
@@ -415,11 +417,9 @@ class CrawlerClient {
   async run() {
     try {
       const results = [];
-      for (const { schema } of this.steps.values()) {
-        for (const url of schema.urls) {
-          const values = await this.#extractPage(schema, url);
-          results.push({ id: schema.id, url, values });
-        }
+      for (const page of Object.values(this.pages)) {
+        const values = await this.#extractPage(page);
+        results.push({ id: page.schemaId, url: page.url, values });
       }
       return results;
     } finally {
@@ -427,22 +427,17 @@ class CrawlerClient {
     }
   }
 
-  async #extractPage(schema, url) {
-    const { fields, entityType, classifications } = schema;
-    const html = await this.#browser.loadHTML(url);
-    // const html = await fs.readFile(
-    //   path.join(__dirname, "fixtures", "restaurant-snapshot-v1.html"),
-    //   "utf8",
-    // );
-
+  async #extractPage(page) {
+    const { entityType, classifications } = this.schemas[page.schemaId];
+    const html = await this.#browser.loadHTML(page.url);
     const $ = cheerio.load(html);
 
     const values = {
       type: entityType,
-      ...(await resolveFields($, fields, classifications)),
+      ...(await resolveFields($, page.fields, classifications)),
     };
 
-    await persistValues(schema, url, values);
+    await persistValues(page, values);
     return values;
   }
 }
