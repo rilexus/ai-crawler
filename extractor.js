@@ -181,12 +181,13 @@ function persistValues(page, values) {
   return writeJson(pageDir(page), "page-values", values);
 }
 
-// Copies a schema's field tree for one page, adding an empty selector list
-// to every field so each page learns its own selectors.
+// Copies a schema's field tree for one page, giving every field its own
+// selector list (seeded from any predefined selectors) so each page learns
+// its own selectors.
 function createPageFields(schemaFields) {
-  return schemaFields.map(({ fields, ...field }) => ({
+  return schemaFields.map(({ fields, selectorCandidates = [], ...field }) => ({
     ...field,
-    selectorCandidates: [],
+    selectorCandidates: [...selectorCandidates],
     ...(fields ? { fields: createPageFields(fields) } : {}),
   }));
 }
@@ -354,13 +355,16 @@ class CrawlerClient {
    * @param {string} [options.id] Schema ID. Defaults to `name`.
    * @param {string} options.name
    * @param {Array<string>} options.urls Pages to extract with this schema.
-   * @param {(builder: SchemaBuilder) => any} options.extraction
+   * @param {(builder: SchemaBuilder) => SchemaBuilder | { schema: object } | void} options.extraction
+   *   Either builds the schema with `builder`, or returns `{ schema }` with a
+   *   predefined schema. A predefined schema's `id`, `entityType`,
+   *   `classifications`, and `fields` override the defaults.
    * @returns {this}
    */
   extract(options) {
     const { id = options.name, urls, name, extraction } = options;
 
-    const schema = {
+    const builtSchema = {
       id,
       name,
       entityType: null,
@@ -368,7 +372,15 @@ class CrawlerClient {
       fields: [],
     };
 
-    extraction(new SchemaBuilder(schema));
+    // A builder chain returns the builder, whose `schema` is `builtSchema`.
+    // A predefined schema replaces it, falling back to the defaults above for
+    // anything it leaves out.
+    const { schema: predefinedSchema } =
+      extraction(new SchemaBuilder(builtSchema)) ?? {};
+    const schema =
+      predefinedSchema && predefinedSchema !== builtSchema
+        ? { ...builtSchema, ...predefinedSchema }
+        : builtSchema;
 
     this.schemas[schema.id] = schema;
 

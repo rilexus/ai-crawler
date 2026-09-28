@@ -108,12 +108,34 @@ async function main() {
       urls: [
         "https://www.feinschmecker.de/restaurant/de/köln/neo|biota-6c",
         "https://www.feinschmecker.de/weingut/de/st.-martin/wein-&-sekthaus-alois-kiefer---weingut-aloisiushof-3c",
-        "https://www.feinschmecker.de/baecker/de/staufen-im-breisgau/bäckerei-café-faller-fe",
       ],
       extraction: (builder) => {
         return builder
           .entity("Bäckerei")
           .field("name", "The name of the bakery.", "string");
+      },
+    })
+    .extract({
+      name: "café-faller-fe",
+      urls: [
+        "https://www.feinschmecker.de/baecker/de/staufen-im-breisgau/bäckerei-café-faller-fe",
+      ],
+      extraction: () => {
+        return {
+          schema: {
+            id: "restaurant_description",
+            name: "restaurant_description",
+            entityType: "FoodEstablishment",
+            classifications: [],
+            fields: [
+              {
+                name: "description",
+                description: "The description of the food establishment.",
+                dataType: "string",
+              },
+            ],
+          },
+        };
       },
     })
     .create();
