@@ -1,143 +1,69 @@
 process.loadEnvFile();
 
+const { createOpenAICompatible } = require("@ai-sdk/openai-compatible");
 const { createClient, persistPage, persistSchema } = require("./extractor");
+const { createAI } = require("./lib/ai-sdk");
 const Browser = require("./browser");
 
-const schema = {
-  id: "randomId_1",
-  name: `FoodEstablishment`,
-  entityType: "FoodEstablishment",
-  classifications: [],
-  fields: [
-    {
-      name: "name",
-      description: "The name of the food establishment on the page.",
-      dataType: "string",
-      selectorCandidates: [".location-detail__title"],
-    },
-    {
-      name: "description",
-      description: "The description of the food establishment.",
-      dataType: "string",
-      selectorCandidates: ["#accordion-body-1 .editor"],
-    },
-    {
-      name: "type",
-      description:
-        "The type of the food establishment. Example: Restaurant, CafeOrCoffeeShop, Bakery, Winery",
-      dataType: "string",
-      selectorCandidates: ['[class="location-detail__type"]'],
-    },
-    {
-      name: "openingHours",
-      description: "The opening hours of the restaurant.",
-      dataType: "string",
-      selectorCandidates: ['[class="location-detail__sidebar-opening-hours"]'],
-    },
-    {
-      name: "servesCuisine",
-      entityType: "cuisineType",
-      description:
-        "The types of cuisine the restaurant serves. Example: Fusion, Saisonal or Greek.",
-      dataType: "array",
-      selectorCandidates: [
-        ".location-detail__types-row:nth-child(2) .location-detail__types-tag",
-        ".location-detail__types-row:nth-of-type(2) .location-detail__types-tags > .location-detail__types-tag",
-        ".location-detail__types-tags > .location-detail__types-tag",
-        ".location-detail__types-tag",
-      ],
-      classifications: [],
-      fields: [
-        {
-          name: "name",
-          description: "One specific cuisine type.",
-          dataType: "string",
-          selectorCandidates: ["div.location-detail__types-tag"],
-        },
-      ],
-    },
-    {
-      name: "contactPoint",
-      entityType: "ContactPoint",
-      description: "Contact information like email, phone etc.",
-      dataType: "object",
-      selectorCandidates: [],
-      classifications: [],
-      fields: [
-        {
-          name: "email",
-          description: "Email of the restaurant.",
-          dataType: "string",
-          selectorCandidates: ['a[href^="mailto:"]'],
-        },
-        {
-          name: "website",
-          description: "Website URL of the restaurant.",
-          dataType: "string",
-          selectorCandidates: [
-            'a[href="https://thecloud.restaurant/"]',
-            '.location-detail__sidebar-contact a[target="_blank"]',
-          ],
-        },
-        {
-          name: "instagram",
-          description: "Link to the instagram page of the food establishment.",
-          dataType: "string",
-          selectorCandidates: [
-            'a[href^="https://www.instagram.com/thecloudbykaefer"]',
-            '.location-detail__sidebar-contact a[href*="instagram.com"]',
-          ],
-        },
-        {
-          name: "telephone",
-          description: "Telephone number of the restaurant",
-          dataType: "string",
-          selectorCandidates: ['a[href^="tel:"]'],
-        },
-      ],
-    },
-  ],
-};
+const deepseek = createOpenAICompatible({
+  name: "deepseek",
+  baseURL: `${process.env.DEEP_SEEK_API_URL}`,
+  apiKey: process.env.DEEP_SEEK_API_KEY,
+});
 
 async function main() {
-  const client = createClient(new Browser());
+  const client = createClient(
+    new Browser(),
+    createAI(deepseek(process.env.DEEP_SEEK_MODEL_NAME || "deepseek-chat")),
+  );
 
   const workflow = await client
     .extract({
-      name: "feinschmecker",
-      urls: [
-        "https://www.feinschmecker.de/restaurant/de/köln/neo|biota-6c",
-        "https://www.feinschmecker.de/weingut/de/st.-martin/wein-&-sekthaus-alois-kiefer---weingut-aloisiushof-3c",
-      ],
+      name: "bidlabu",
+      urls: ["https://bidlabu.de/"],
       extraction: (builder) => {
         return builder
-          .entity("Bäckerei")
-          .field("name", "The name of the bakery.", "string");
+          .entity("Restaurant")
+          .field("menus", "Menus of the restaurant", "array", (builder) => {
+            return builder
+              .entity("Menu")
+              .field("name", "The title of the menu.", "string");
+          });
       },
     })
-    .extract({
-      name: "restaurant_description",
-      urls: [
-        "https://www.feinschmecker.de/baecker/de/staufen-im-breisgau/bäckerei-café-faller-fe",
-      ],
-      extraction: () => {
-        return {
-          schema: {
-            id: "restaurant_description",
-            name: "restaurant_description",
-            entityType: "FoodEstablishment",
-            classifications: [],
-            fields: [
-              {
-                name: "description",
-                description: "The description of the food establishment.",
-                dataType: "string",
-              },
-            ],
-          },
-        };
-      },
-    })
+    // .extract({
+    //   name: "feinschmecker",
+    //   urls: ["https://www.feinschmecker.de/restaurant/de/köln/neo|biota-6c"],
+    //   extraction: (builder) => {
+    //     return builder
+    //       .entity("Bäckerei")
+    //       .field("name", "The name of the bakery.", "string");
+    //   },
+    // })
+    // .extract({
+    //   name: "restaurant_description",
+    //   urls: [
+    //     "https://www.feinschmecker.de/baecker/de/staufen-im-breisgau/bäckerei-café-faller-fe",
+    //     "https://www.feinschmecker.de/weingut/de/st.-martin/wein-&-sekthaus-alois-kiefer---weingut-aloisiushof-3c",
+    //   ],
+    //   extraction: () => {
+    //     return {
+    //       schema: {
+    //         id: "restaurant_description",
+    //         name: "restaurant_description",
+    //         entityType: "FoodEstablishment",
+    //         classifications: [],
+    //         fields: [
+    //           {
+    //             name: "description",
+    //             description: "The description of the food establishment.",
+    //             dataType: "string",
+    //           },
+    //         ],
+    //       },
+    //     };
+    //   },
+    // })
     .create();
 
   const schemas = await workflow.getSchemas();

@@ -1,18 +1,18 @@
 const fs = require("fs/promises");
 const path = require("path");
-const { generateText, Output } = require("ai");
-const { createOpenAICompatible } = require("@ai-sdk/openai-compatible");
 const cheerio = require("cheerio");
 const { z } = require("zod");
 
-const apiKey = process.env.DEEP_SEEK_API_KEY;
-const baseURL = `${process.env.DEEP_SEEK_API_URL}`;
-
-const deepseek = createOpenAICompatible({
-  name: "deepseek",
-  baseURL,
-  apiKey,
-});
+/**
+ * The AI the extractor depends on. Inject any implementation, for example
+ * `createAI()` from `lib/ai-sdk.js`.
+ *
+ * @typedef {object} AI
+ * @property {(options: { prompt: string, schema: z.ZodTypeAny }) => Promise<any>} generateObject
+ *   Returns an object that matches `schema`.
+ * @property {(options: { prompt: string, options: Array<string> }) => Promise<string>} generateChoice
+ *   Returns one of `options`.
+ */
 
 // Strips markup that never helps selector/value extraction (scripts, styles,
 // comments, svg internals, head) and unstable/noisy attributes (class, style,
@@ -39,7 +39,7 @@ function pruneHtml(html) {
   return $.html().replace(/\s+/g, " ").trim();
 }
 
-async function extractFields({ fields, html }) {
+async function extractFields({ ai, fields, html }) {
   const fieldList = fields
     .map(({ name, description }) => `- "${name}": ${description}`)
     .join("\n");
@@ -82,18 +82,13 @@ Respond with only a JSON object, no other text, shaped exactly like this (one en
   );
 
   try {
-    const { output } = await generateText({
-      model: deepseek(process.env.DEEP_SEEK_MODEL_NAME || "deepseek-chat"),
-      prompt,
-      output: Output.object({ schema }),
-    });
-    return output;
+    return await ai.generateObject({ prompt, schema });
   } catch {
     return {};
   }
 }
 
-async function extractContainer({ field, html }) {
+async function extractContainer({ ai, field, html }) {
   const prompt = `You are locating a repeating list of elements in HTML for a web scraper.
 Here is the page HTML:
 \`\`\`html
@@ -101,7 +96,7 @@ ${pruneHtml(html)}
 \`\`\`
 Find the container element that repeats once per item for: "${field.name}" - ${field.description}
 
-Propose up to 4 candidate CSS selectors (best first) that would each select ALL of the
+Propose up to 2 candidate CSS selectors (best first) that would each select ALL of the
 repeating container elements (one match per item), not the text inside them. Prefer
 attribute-based selectors (data-hook, etc.) over class names, since class names on this site
 are auto-generated and unstable.
@@ -110,22 +105,18 @@ Respond with only a JSON object, no other text, shaped exactly like this:
 { "candidates": string[] }`;
 
   const schema = z.object({
-    candidates: z.array(z.string()).max(4),
+    candidates: z.array(z.string()).max(2),
   });
 
   try {
-    const { output } = await generateText({
-      model: deepseek(process.env.DEEP_SEEK_MODEL_NAME || "deepseek-chat"),
-      prompt,
-      output: Output.object({ schema }),
-    });
-    return output.candidates;
+    const { candidates } = await ai.generateObject({ prompt, schema });
+    return candidates;
   } catch {
     return [];
   }
 }
 
-async function generateClassifycation({ classyfication, fields }) {
+async function generateClassifycation({ ai, classyfication, fields }) {
   const { type, description, options } = classyfication;
 
   const fieldSummary = fields
@@ -133,7 +124,7 @@ async function generateClassifycation({ classyfication, fields }) {
     .join("\n");
 
   const optionList = options
-    .map(({ title, definition }) => `- "${title}: ${definition}"`)
+    .map(({ title, definition }) => `- "${title}": ${definition}`)
     .join("\n");
 
   const prompt = `You are classifying a web page entity based on data extracted from it.
@@ -146,15 +137,13 @@ ${fieldSummary}
 Choose exactly one of these options that best fits:
 ${optionList}
 
-Respond with a JSON object matching the requested schema.`;
+Answer with the title of exactly one option, written exactly as it appears in
+quotes above, without the quotes or the definition.`;
 
-  const { output } = await generateText({
-    model: deepseek(process.env.DEEP_SEEK_MODEL_NAME || "deepseek-chat"),
+  return ai.generateChoice({
     prompt,
-    output: Output.choice({ options: options.map(({ title }) => title) }),
+    options: options.map(({ title }) => title),
   });
-
-  return output;
 }
 
 async function writeJson(dir, name, data) {
@@ -198,13 +187,13 @@ function addSelectorCandidates(field, candidates) {
   ];
 }
 
-async function assignSelectorCandidates(fields, html) {
+async function assignSelectorCandidates(ai, fields, html) {
   const leafFields = fields.filter(
     (field) => field.dataType !== "object" && field.dataType !== "array",
   );
 
   if (leafFields.length) {
-    const results = await extractFields({ fields: leafFields, html });
+    const results = await extractFields({ ai, fields: leafFields, html });
 
     for (const field of leafFields) {
       const { candidates = [] } = results[field.name] ?? {};
@@ -214,11 +203,11 @@ async function assignSelectorCandidates(fields, html) {
 
   for (const field of fields) {
     if (field.dataType === "object" && field.fields?.length) {
-      await assignSelectorCandidates(field.fields, html);
+      await assignSelectorCandidates(ai, field.fields, html);
     }
 
     if (field.dataType === "array" && field.fields?.length) {
-      addSelectorCandidates(field, await extractContainer({ field, html }));
+      addSelectorCandidates(field, await extractContainer({ ai, field, html }));
 
       const $ = cheerio.load(html);
       const containerSelector = field.selectorCandidates.find(
@@ -228,19 +217,19 @@ async function assignSelectorCandidates(fields, html) {
         ? $.html($(containerSelector).first())
         : html;
 
-      await assignSelectorCandidates(field.fields, itemHtml);
+      await assignSelectorCandidates(ai, field.fields, itemHtml);
     }
   }
 }
 
-async function resolveFields($, fields, classifications = []) {
+async function resolveFields(ai, $, fields, classifications = []) {
   const values = {};
 
   for (const field of fields) {
     if (field.dataType === "object" && field.fields?.length) {
       values[field.name] = {
         type: field.entityType,
-        ...(await resolveFields($, field.fields, field.classifications)),
+        ...(await resolveFields(ai, $, field.fields, field.classifications)),
       };
       continue;
     }
@@ -258,7 +247,12 @@ async function resolveFields($, fields, classifications = []) {
         const $item = cheerio.load($.html(container));
         values[field.name].push({
           type: field.entityType,
-          ...(await resolveFields($item, field.fields, field.classifications)),
+          ...(await resolveFields(
+            ai,
+            $item,
+            field.fields,
+            field.classifications,
+          )),
         });
       }
       continue;
@@ -282,6 +276,7 @@ async function resolveFields($, fields, classifications = []) {
       value: values[name],
     }));
     values[classyfication.type] = await generateClassifycation({
+      ai,
       classyfication,
       fields: fieldValues,
     });
@@ -334,14 +329,17 @@ class SchemaBuilder {
 
 class CrawlerClient {
   #browser;
+  #ai;
   /** @type {Map<string, string>} `extract()` name by schema ID. */
   #schemaNames = new Map();
   /**
    * @param {import("./browser")} browser The client takes ownership and
    *   closes it when `run()` finishes.
+   * @param {AI} ai Proposes selectors and classifies entities.
    */
-  constructor(browser) {
+  constructor(browser, ai) {
     this.#browser = browser;
+    this.#ai = ai;
     /** @type {Record<string, object>} Schemas by ID. */
     this.schemas = {};
     /** @type {Record<string, { url: string, name: string, schemaId: string, fields: Array<object> }>} Pages by URL. */
@@ -410,7 +408,7 @@ class CrawlerClient {
     try {
       for (const page of Object.values(this.pages)) {
         const html = await this.#browser.loadHTML(page.url);
-        await assignSelectorCandidates(page.fields, html);
+        await assignSelectorCandidates(this.#ai, page.fields, html);
       }
     } catch (error) {
       await this.#browser.close();
@@ -495,7 +493,7 @@ class CrawlerClient {
 
     const values = {
       type: entityType,
-      ...(await resolveFields($, page.fields, classifications)),
+      ...(await resolveFields(this.#ai, $, page.fields, classifications)),
     };
 
     await persistValues(page, values);
@@ -503,8 +501,12 @@ class CrawlerClient {
   }
 }
 
-function createClient(browser) {
-  return new CrawlerClient(browser);
+/**
+ * @param {import("./browser")} browser
+ * @param {AI} ai
+ */
+function createClient(browser, ai) {
+  return new CrawlerClient(browser, ai);
 }
 
 module.exports = { createClient, persistPage, persistSchema };
