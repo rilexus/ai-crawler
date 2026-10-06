@@ -1,6 +1,6 @@
 process.loadEnvFile();
 
-const { createClient } = require("./extractor");
+const { createClient, persistPage, persistSchema } = require("./extractor");
 const Browser = require("./browser");
 
 const schema = {
@@ -104,7 +104,7 @@ async function main() {
 
   const workflow = await client
     .extract({
-      name: "café-faller-fe",
+      name: "feinschmecker",
       urls: [
         "https://www.feinschmecker.de/restaurant/de/köln/neo|biota-6c",
         "https://www.feinschmecker.de/weingut/de/st.-martin/wein-&-sekthaus-alois-kiefer---weingut-aloisiushof-3c",
@@ -116,7 +116,7 @@ async function main() {
       },
     })
     .extract({
-      name: "café-faller-fe",
+      name: "restaurant_description",
       urls: [
         "https://www.feinschmecker.de/baecker/de/staufen-im-breisgau/bäckerei-café-faller-fe",
       ],
@@ -140,7 +140,17 @@ async function main() {
     })
     .create();
 
+  const schemas = await workflow.getSchemas();
+  for (const schema of schemas) {
+    await persistSchema(schema);
+  }
+
   await workflow.run();
+  const pages = await workflow.getPages();
+  if (!pages.length) throw new Error("No pages found!");
+  for (const page of pages) {
+    await persistPage(page);
+  }
 }
 
 main();

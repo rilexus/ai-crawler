@@ -334,6 +334,8 @@ class SchemaBuilder {
 
 class CrawlerClient {
   #browser;
+  /** @type {Map<string, string>} `extract()` name by schema ID. */
+  #schemaNames = new Map();
   /**
    * @param {import("./browser")} browser The client takes ownership and
    *   closes it when `run()` finishes.
@@ -342,7 +344,7 @@ class CrawlerClient {
     this.#browser = browser;
     /** @type {Record<string, object>} Schemas by ID. */
     this.schemas = {};
-    /** @type {Record<string, { url: string, schemaId: string, fields: Array<object> }>} Pages by URL. */
+    /** @type {Record<string, { url: string, name: string, schemaId: string, fields: Array<object> }>} Pages by URL. */
     this.pages = {};
   }
 
@@ -383,10 +385,12 @@ class CrawlerClient {
         : builtSchema;
 
     this.schemas[schema.id] = schema;
+    this.#schemaNames.set(schema.id, name);
 
     for (const url of urls) {
       this.pages[url] = {
         url,
+        name,
         schemaId: schema.id,
         fields: createPageFields(schema.fields),
       };
@@ -396,27 +400,72 @@ class CrawlerClient {
   }
 
   /**
-   * Generates selector candidates for every page from that page's own HTML,
-   * then saves schemas to `schemas/` and pages to `pages/`. Call before
-   * `run()`. Closes the browser on failure.
+   * Generates selector candidates for every page from that page's own HTML.
+   * Schemas and pages stay in memory; save them with `persistSchema()` and
+   * `persistPage()`. Call before `run()`. Closes the browser on failure.
    *
    * @returns {Promise<this>}
    */
   async create() {
     try {
-      for (const schema of Object.values(this.schemas)) {
-        await persistSchema(schema);
-      }
       for (const page of Object.values(this.pages)) {
         const html = await this.#browser.loadHTML(page.url);
         await assignSelectorCandidates(page.fields, html);
-        await persistPage(page);
       }
     } catch (error) {
       await this.#browser.close();
       throw error;
     }
     return this;
+  }
+
+  /**
+   * Returns every page, one per URL, in insertion order.
+   *
+   * @returns {Promise<Array<{ url: string, name: string, schemaId: string, fields: Array<object> }>>}
+   */
+  async getPages() {
+    return Object.values(this.pages);
+  }
+
+  /**
+   * Finds every page added by the `extract()` call with this `name`, one per
+   * URL, in insertion order.
+   *
+   * @param {object} options
+   * @param {string} options.name
+   * @returns {Promise<Array<{ url: string, name: string, schemaId: string, fields: Array<object> }>>}
+   *   An empty array when no page has this name.
+   */
+  async getPage({ name }) {
+    return (await this.getPages()).filter(
+      ({ name: pageName }) => pageName === name,
+    );
+  }
+
+  /**
+   * Returns every schema, in insertion order.
+   *
+   * @returns {Promise<Array<object>>}
+   */
+  async getSchemas() {
+    return Object.values(this.schemas);
+  }
+
+  /**
+   * Finds every schema added by an `extract()` call with this `name`, in
+   * insertion order. Matches the `extract()` name, not the schema's own
+   * `name`, which a predefined schema can override.
+   *
+   * @param {object} options
+   * @param {string} options.name
+   * @returns {Promise<Array<object>>} An empty array when no schema has this
+   *   name.
+   */
+  async getSchema({ name }) {
+    return (await this.getSchemas()).filter(
+      ({ id }) => this.#schemaNames.get(id) === name,
+    );
   }
 
   /**
@@ -458,4 +507,4 @@ function createClient(browser) {
   return new CrawlerClient(browser);
 }
 
-module.exports = { createClient };
+module.exports = { createClient, persistPage, persistSchema };
