@@ -407,8 +407,7 @@ class CrawlerClient {
   async create() {
     try {
       for (const page of Object.values(this.pages)) {
-        const _page = await this.#browser.goto(page.url);
-        const html = await _page.html();
+        const html = await this.#loadHTML(page.url);
         await assignSelectorCandidates(this.#ai, page.fields, html);
       }
     } catch (error) {
@@ -487,10 +486,18 @@ class CrawlerClient {
     }
   }
 
+  async #loadHTML(url) {
+    const tab = await this.#browser.goto(url);
+    try {
+      return await tab.html();
+    } finally {
+      await tab.close();
+    }
+  }
+
   async #extractPage(page) {
     const { entityType, classifications } = this.schemas[page.schemaId];
-    const _page = await this.#browser.goto(page.url);
-    const html = await _page.html();
+    const html = await this.#loadHTML(page.url);
     const $ = cheerio.load(html);
 
     const values = {
