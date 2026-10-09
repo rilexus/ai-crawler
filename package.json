@@ -4,9 +4,11 @@
   "description": "LLM-assisted web extraction: a fluent builder declares entities/fields (including nested objects and repeating arrays), the LLM proposes CSS selectors, and each candidate is verified against the page before values are persisted.",
   "main": "index.js",
   "scripts": {
-    "dev": "tsx --env-file=.env index.js"
+    "dev": "tsx --env-file=.env index.js",
+    "build": "esbuild index.js --bundle --platform=node --target=node22 --packages=external --outfile=dist/index.js"
   },
   "devDependencies": {
+    "esbuild": "^0.28.2",
     "prettier": "^3.9.5",
     "tsx": "^4.23.1"
   },

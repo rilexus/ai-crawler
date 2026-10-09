@@ -38,14 +38,38 @@ async function main() {
       name: "restaurant",
       urls: [
         "https://bidlabu.de/",
-        "https://lohninger.de/",
-        "https://www.maintower-restaurant.de/",
+        // "https://lohninger.de/",
+        // "https://www.maintower-restaurant.de/",
       ],
       extraction: (builder) => {
         return builder
           .entity("Restaurant")
-          .field("name", "The name of the restaurant.", "string")
-          .field("address", "The address of the restaurant.", "string");
+          .field(
+            "hasMenus",
+            "Menus offered by the restaurant.",
+            "array",
+            (builder) =>
+              builder
+                .entity("Menu")
+                .field(
+                  "name",
+                  "The name of menu offered by the restaurant",
+                  "string",
+                )
+                .field(
+                  "hasMenuItems",
+                  "Menu items of one specific menu",
+                  "array",
+                  (builder) =>
+                    builder
+                      .entity("MenuItem")
+                      .field(
+                        "name",
+                        "Menu item name of one offeren menu",
+                        "string",
+                      ),
+                ),
+          );
       },
     })
     .create();
