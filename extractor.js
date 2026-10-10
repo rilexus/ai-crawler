@@ -2,6 +2,7 @@ const fs = require("fs/promises");
 const path = require("path");
 const cheerio = require("cheerio");
 const { z } = require("zod");
+const { buildSchema } = require("./schema-builder");
 
 /**
  * The AI the extractor depends on. Inject any implementation, for example
@@ -14,19 +15,28 @@ const { z } = require("zod");
  *   Returns one of `options`.
  */
 
-// Strips markup that never helps selector/value extraction (scripts, styles,
-// comments, svg internals, head) and unstable/noisy attributes (class, style,
-// event handlers) before the HTML is embedded in a prompt. Cuts prompt size
-// dramatically since it's resent on every extraction call at every nesting
-// level. Only used for the LLM prompt — real selector matching against the
-// page still runs against the original, unpruned HTML.
-function pruneHtml(html) {
+// Removes elements that never hold extractable content (scripts, styles,
+// comments, svg internals, head). Both the LLM prompt and selector matching
+// use the result, so positional selectors the AI proposes (`:first-child`,
+// `:nth-of-type()`) point at the same elements when values are resolved.
+function removeNonContent(html) {
   if (!html) return "";
 
   const withoutComments = html.replace(/<!--[\s\S]*?-->/g, "");
   const $ = cheerio.load(withoutComments);
 
   $("head, script, style, noscript, template, svg").remove();
+
+  return $.html();
+}
+
+// Also strips noisy attributes (inline style, event handlers) and collapses
+// whitespace before the HTML is embedded in a prompt. Cuts prompt size
+// dramatically since it's resent on every extraction call at every nesting
+// level. Attributes and whitespace don't affect which elements a selector
+// matches, so this step is safe to skip for matching.
+function pruneHtml(html) {
+  const $ = cheerio.load(removeNonContent(html));
 
   $("*").each((_, el) => {
     if (!el.attribs) return;
@@ -39,9 +49,12 @@ function pruneHtml(html) {
   return $.html().replace(/\s+/g, " ").trim();
 }
 
-async function extractFields({ ai, fields, html }) {
+async function extractFields({ ai, fields, html, itemCount = 1 }) {
   const fieldList = fields
-    .map(({ name, description }) => `- "${name}": ${description}`)
+    .map(
+      ({ name, description, example }) =>
+        `- "${name}": ${description}${example ? ` (for example "${example}")` : ""}`,
+    )
     .join("\n");
 
   const prompt = `You are extracting information from HTML for a web scraper.
@@ -55,7 +68,15 @@ ${fieldList}
 For each field, pick the most fitting value form the HTML. Use null for anything you can't find —
 do not invent data. Then propose up to 1 candidate CSS selector that would select
 that exact value in the HTML above. Prefer attribute-based selectors (href, src, alt, data-hook)
-over class names, since class names on this site are auto-generated and unstable.
+over class names, since class names on this site are auto-generated and unstable.${
+    itemCount > 1
+      ? `
+
+The HTML holds ${itemCount} items of the same list, one after another. Each selector runs
+inside every item on its own, so it must select the field in each of them. Don't build a
+selector from values that belong to one item, such as its id, href, or text.`
+      : ""
+  }
 
 Respond with only a JSON object, no other text, shaped exactly like this (one entry per field,
 "candidates" holding up to 2 selector string):
@@ -89,12 +110,24 @@ Respond with only a JSON object, no other text, shaped exactly like this (one en
 }
 
 async function extractContainer({ ai, field, html }) {
+  const itemFieldList = field.fields
+    .map(({ name, description }) => `- "${name}": ${description}`)
+    .join("\n");
+
   const prompt = `You are locating a repeating list of elements in HTML for a web scraper.
 Here is the page HTML:
 \`\`\`html
 ${pruneHtml(html)}
 \`\`\`
 Find the container element that repeats once per item for: "${field.name}" - ${field.description}
+
+Each item has these fields:
+${itemFieldList}
+
+Every container must hold the values of these fields as text inside it. Values only get
+extracted from inside the container, so a container that leaves a field out (for example,
+a tab panel whose title only appears in a separate tab list) is wrong; pick the element that
+does hold the values instead (for example, the tab itself).
 
 Propose up to 2 candidate CSS selectors (best first) that would each select ALL of the
 repeating container elements (one match per item), not the text inside them. Prefer
@@ -187,13 +220,36 @@ function addSelectorCandidates(field, candidates) {
   ];
 }
 
-async function assignSelectorCandidates(ai, fields, html) {
+// Moves the selectors that find a value in the most containers to the front,
+// so an item-specific selector the AI proposed doesn't shadow a general one.
+function rankSelectorCandidates($, fields, containers) {
+  const items = containers.map((container) => cheerio.load($.html(container)));
+
+  for (const field of fields) {
+    if (field.dataType === "object" || field.dataType === "array") continue;
+
+    const coverage = new Map(
+      field.selectorCandidates.map((selector) => [
+        selector,
+        items.filter(($item) => $item(selector).first().text().trim()).length,
+      ]),
+    );
+    field.selectorCandidates.sort((a, b) => coverage.get(b) - coverage.get(a));
+  }
+}
+
+async function assignSelectorCandidates(ai, fields, html, itemCount = 1) {
   const leafFields = fields.filter(
     (field) => field.dataType !== "object" && field.dataType !== "array",
   );
 
   if (leafFields.length) {
-    const results = await extractFields({ ai, fields: leafFields, html });
+    const results = await extractFields({
+      ai,
+      fields: leafFields,
+      html,
+      itemCount,
+    });
 
     for (const field of leafFields) {
       const { candidates = [] } = results[field.name] ?? {};
@@ -203,7 +259,7 @@ async function assignSelectorCandidates(ai, fields, html) {
 
   for (const field of fields) {
     if (field.dataType === "object" && field.fields?.length) {
-      await assignSelectorCandidates(ai, field.fields, html);
+      await assignSelectorCandidates(ai, field.fields, html, itemCount);
     }
 
     if (field.dataType === "array" && field.fields?.length) {
@@ -213,11 +269,24 @@ async function assignSelectorCandidates(ai, fields, html) {
       const containerSelector = field.selectorCandidates.find(
         (selector) => $(selector).length,
       );
-      const itemHtml = containerSelector
-        ? $.html($(containerSelector).first())
+      const containers = containerSelector
+        ? $(containerSelector).toArray()
+        : [];
+
+      // Shows the AI a few items so it proposes selectors that work for all
+      // of them, not only the first.
+      const samples = containers.slice(0, 3);
+      const itemHtml = samples.length
+        ? samples.map((container) => $.html(container)).join("\n")
         : html;
 
-      await assignSelectorCandidates(ai, field.fields, itemHtml);
+      await assignSelectorCandidates(
+        ai,
+        field.fields,
+        itemHtml,
+        samples.length || 1,
+      );
+      rankSelectorCandidates($, field.fields, containers);
     }
   }
 }
@@ -285,53 +354,13 @@ async function resolveFields(ai, $, fields, classifications = []) {
   return values;
 }
 
-class SchemaBuilder {
-  id = null;
-
-  constructor(schema) {
-    this.schema = schema;
-  }
-
-  entity(type) {
-    this.schema.entityType = type;
-    return this;
-  }
-
-  field(name, description, type, extraction) {
-    const field = {
-      name,
-      ...(typeof extraction === "function" ? { entityType: null } : {}),
-      description,
-      dataType: type,
-    };
-
-    if (typeof extraction === "function") {
-      const nested = { entityType: null, classifications: [], fields: [] };
-      extraction(new SchemaBuilder(nested));
-      field.entityType = nested.entityType;
-      field.classifications = nested.classifications;
-      field.fields = nested.fields;
-    }
-
-    this.schema.fields.push(field);
-    return this;
-  }
-
-  classify(type, description, options) {
-    this.schema.classifications.push({
-      type,
-      description,
-      options,
-    });
-    return this;
-  }
-}
-
 class CrawlerClient {
   #browser;
   #ai;
   /** @type {Map<string, string>} `extract()` name by schema ID. */
   #schemaNames = new Map();
+  /** @type {Map<string, string>} HTML passed to `extract()` by page URL. */
+  #htmlByUrl = new Map();
   /**
    * @param {import("./browser")} browser The client takes ownership and
    *   closes it when `run()` finishes.
@@ -344,6 +373,42 @@ class CrawlerClient {
     this.schemas = {};
     /** @type {Record<string, { url: string, name: string, schemaId: string, fields: Array<object> }>} Pages by URL. */
     this.pages = {};
+    /** Defines reusable schemas outside of `extract()`. */
+    this.schema = {
+      createSchema: (options) => this.#createSchema(options),
+    };
+  }
+
+  /**
+   * Creates a standalone schema you can reuse as the nested schema of an
+   * `object` or `array` field: `(builder) => ({ schema })`.
+   *
+   * @param {object} options
+   * @param {string} options.name
+   * @param {string} [options.id] Schema ID. Defaults to `name`.
+   * @param {string} [options.entity] Entity type of the extracted values.
+   * @param {Array<object>} [options.classifications]
+   * @param {Array<{ name: string, description: string, fieldType?: string, dataType: string, example?: string, fields?: Array<object> }>} options.fields
+   *   `example` shows the AI what a value looks like.
+   * @returns {Promise<object>} The schema.
+   */
+  async #createSchema({
+    name,
+    id = name,
+    entity = null,
+    classifications = [],
+    fields,
+  }) {
+    const schema = {
+      id,
+      name,
+      entityType: entity,
+      classifications: structuredClone(classifications),
+      fields: structuredClone(fields),
+    };
+
+    this.schemas[schema.id] = schema;
+    return schema;
   }
 
   /**
@@ -355,14 +420,16 @@ class CrawlerClient {
    * @param {string} [options.id] Schema ID. Defaults to `name`.
    * @param {string} options.name
    * @param {Array<string>} options.urls Pages to extract with this schema.
-   * @param {(builder: SchemaBuilder) => SchemaBuilder | { schema: object } | void} options.extraction
+   * @param {string} [options.html] HTML to extract from instead of loading
+   *   each URL in the browser. The URLs then only identify the pages.
+   * @param {(builder: import("./schema-builder").SchemaBuilder) => import("./schema-builder").SchemaBuilder | { schema: object } | void} options.extraction
    *   Either builds the schema with `builder`, or returns `{ schema }` with a
    *   predefined schema. A predefined schema's `id`, `entityType`,
    *   `classifications`, and `fields` override the defaults.
    * @returns {this}
    */
   extract(options) {
-    const { id = options.name, urls, name, extraction } = options;
+    const { id = options.name, urls, name, html, extraction } = options;
 
     const builtSchema = {
       id,
@@ -372,15 +439,7 @@ class CrawlerClient {
       fields: [],
     };
 
-    // A builder chain returns the builder, whose `schema` is `builtSchema`.
-    // A predefined schema replaces it, falling back to the defaults above for
-    // anything it leaves out.
-    const { schema: predefinedSchema } =
-      extraction(new SchemaBuilder(builtSchema)) ?? {};
-    const schema =
-      predefinedSchema && predefinedSchema !== builtSchema
-        ? { ...builtSchema, ...predefinedSchema }
-        : builtSchema;
+    const schema = buildSchema(builtSchema, extraction);
 
     this.schemas[schema.id] = schema;
     this.#schemaNames.set(schema.id, name);
@@ -392,6 +451,9 @@ class CrawlerClient {
         schemaId: schema.id,
         fields: createPageFields(schema.fields),
       };
+
+      if (html === undefined) this.#htmlByUrl.delete(url);
+      else this.#htmlByUrl.set(url, html);
     }
 
     return this;
@@ -486,10 +548,16 @@ class CrawlerClient {
     }
   }
 
+  // Returns the page HTML without non-content elements, the same HTML the AI
+  // sees, so its selectors match the elements it meant.
   async #loadHTML(url) {
+    if (this.#htmlByUrl.has(url)) {
+      return removeNonContent(this.#htmlByUrl.get(url));
+    }
+
     const tab = await this.#browser.goto(url);
     try {
-      return await tab.html();
+      return removeNonContent(await tab.html());
     } finally {
       await tab.close();
     }

@@ -4,7 +4,7 @@ const { createClient, persistPage, persistSchema } = require("./extractor");
 const { createAI } = require("./lib/ai-sdk");
 const Browser = require("./lib/browser");
 const { existsSync } = require("node:fs");
-const { writeFile } = require("node:fs/promises");
+const { readFile, writeFile } = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const { copyBraveProfile } = require("./lib/chrome");
@@ -33,41 +33,54 @@ async function main() {
     createAI(deepseek(process.env.DEEP_SEEK_MODEL_NAME || "deepseek-chat")),
   );
 
+  const menuItemSchema = await client.schema.createSchema({
+    name: "MenuItem",
+    entity: "MenuItem",
+    fields: [
+      {
+        name: "name",
+        description: "Menu item name",
+        fieldType: "SCHEMA",
+        dataType: "string",
+        example: "Noodles",
+      },
+      {
+        name: "description",
+        description: "Menu item description",
+        fieldType: "SCHEMA",
+        dataType: "string",
+      },
+      {
+        name: "price",
+        description: "Menu item price",
+        fieldType: "SCHEMA",
+        dataType: "money",
+      },
+    ],
+  });
+
   const workflow = await client
     .extract({
       name: "restaurant",
-      urls: [
-        "https://bidlabu.de/",
-        // "https://lohninger.de/",
-        // "https://www.maintower-restaurant.de/",
-      ],
+      urls: ["https://bidlabu.de/"],
+      // html: await readFile(
+      //   path.join(__dirname, "fixtures", "restaurant-snapshot-v1.html"),
+      //   "utf8",
+      // ),
       extraction: (builder) => {
         return builder
           .entity("Restaurant")
           .field(
             "hasMenus",
-            "Menus offered by the restaurant.",
+            "Offered menus by the restaurant.",
             "array",
             (builder) =>
               builder
                 .entity("Menu")
                 .field(
                   "name",
-                  "The name of menu offered by the restaurant",
+                  "The name of a specific menu offered.",
                   "string",
-                )
-                .field(
-                  "hasMenuItems",
-                  "Menu items of one specific menu",
-                  "array",
-                  (builder) =>
-                    builder
-                      .entity("MenuItem")
-                      .field(
-                        "name",
-                        "Menu item name of one offeren menu",
-                        "string",
-                      ),
                 ),
           );
       },
