@@ -77,10 +77,19 @@ async function main() {
             (builder) =>
               builder
                 .entity("Menu")
+                .field("name", "The name of a specific menu offered.", "string")
                 .field(
-                  "name",
-                  "The name of a specific menu offered.",
-                  "string",
+                  "menuItems",
+                  "Offered items in the menu.",
+                  "array",
+                  (builder) =>
+                    builder
+                      .entity("MenuItem")
+                      .field(
+                        "name",
+                        "The name of the offered item in a menu.",
+                        "string",
+                      ),
                 ),
           );
       },
