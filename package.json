@@ -3,12 +3,14 @@
   "version": "0.1.0",
   "description": "LLM-assisted web extraction: a fluent builder declares entities/fields (including nested objects and repeating arrays), the LLM proposes CSS selectors, and each candidate is verified against the page before values are persisted.",
   "main": "index.js",
+  "type": "module",
   "scripts": {
-    "dev": "tsx --env-file=.env index.js",
-    "build": "esbuild index.js --bundle --platform=node --target=node22 --packages=external --outfile=dist/index.js",
-    "app:dev": "concurrently --kill-others-on-fail --names server,web --prefix-colors blue,magenta \"npm:server:dev\" \"npm:web:dev\"",
-    "server:dev": "node --watch app/index.js",
+    "dev": "concurrently --kill-others-on-fail --names workflow,app,web --prefix-colors blue,green,magenta \"npm:workflow:dev\" \"npm:app:dev\" \"npm:web:dev\"",
+    "workflow:dev": "node --watch workflow/server/index.js",
+    "app:dev": "node --watch app/index.js",
     "web:dev": "vite",
+    "demo": "tsx --env-file=.env index.js",
+    "build": "esbuild index.js --bundle --platform=node --target=node22 --packages=external --outfile=dist/index.js",
     "web:build": "vite build",
     "web:preview": "vite preview"
   },
@@ -31,7 +33,9 @@
     "puppeteer-core": "^25.3.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
+    "sqlite3": "^6.0.1",
     "styled-components": "^6.5.3",
+    "ws": "^8.22.0",
     "zod": "^3.25.76"
   },
   "license": "UNLICENSED"

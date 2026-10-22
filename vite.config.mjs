@@ -1,23 +1,18 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { fileURLToPath } from "node:url";
 
-// public/index.html is the entry page and loads /src/index.jsx, which the
-// alias maps to the src/ folder outside the Vite root.
+// workflow/web/index.html is the entry page and loads ./index.jsx next to it.
 // The build goes to dist/web so it doesn't wipe the esbuild bundle in dist/.
 export default defineConfig({
-  root: "public",
+  root: "workflow/web",
   publicDir: false,
   plugins: [react()],
-  resolve: {
-    alias: { "/src": fileURLToPath(new URL("./src", import.meta.url)) },
-  },
-  // Forward API calls to the Express server in app/index.js.
+  // Forward the WebSocket to the server in workflow/server/index.js.
   server: {
-    proxy: { "/api": "http://localhost:3000" },
+    proxy: { "/ws": { target: "ws://localhost:3000", ws: true } },
   },
   build: {
-    outDir: "../dist/web",
+    outDir: "../../dist/web",
     emptyOutDir: true,
   },
 });
