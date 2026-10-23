@@ -8,12 +8,14 @@ import {
   List,
   Meta,
   Name,
+  Pane,
+  PaneHeading,
+  Panes,
+  Placeholder,
   Row,
-  RowHeader,
-  Run,
   RunHeader,
-  Runs,
   Section,
+  SelectButton,
   Step,
   StepError,
   StepFailure,
@@ -59,7 +61,8 @@ function stepsWithStatus(labels, run) {
   }));
 }
 
-function RunItem({ workflowId, labels, run, canRetry, retry }) {
+// The steps of the selected run, with their results and errors.
+function RunDetail({ workflowId, labels, run, canRetry, retry }) {
   const steps = stepsWithStatus(labels, run);
   // null, or { status: "retrying" | "error", message? }
   const [retryState, setRetryState] = useState(null);
@@ -90,10 +93,10 @@ function RunItem({ workflowId, labels, run, canRetry, retry }) {
   const failedStep = steps.some(({ error }) => error);
 
   return (
-    <Run>
+    <div>
       <RunHeader>
         <Meta>
-          Run started <Time value={run.startedAt} />
+          {workflowId} · Started <Time value={run.startedAt} />
         </Meta>
         <StepStatus $status={run.status}>{statusLabel(run.status)}</StepStatus>
       </RunHeader>
@@ -133,12 +136,29 @@ function RunItem({ workflowId, labels, run, canRetry, retry }) {
           <ErrorText>{retryState.message}</ErrorText>
         )}
       </span>
-    </Run>
+    </div>
   );
 }
 
-function WorkflowRow({ workflow, connected, start, retry }) {
-  const { id, triggers, url, updatedAt, runs } = workflow;
+function RunRow({ run, selected, select }) {
+  return (
+    <Row $selected={selected}>
+      <SelectButton
+        type="button"
+        onClick={select}
+        aria-current={selected || undefined}
+      >
+        <Meta>
+          Started <Time value={run.startedAt} />
+        </Meta>
+        <StepStatus $status={run.status}>{statusLabel(run.status)}</StepStatus>
+      </SelectButton>
+    </Row>
+  );
+}
+
+function WorkflowRow({ workflow, selected, select, connected, start }) {
+  const { id, triggers, url, updatedAt } = workflow;
   // null, or { status: "starting" | "started" | "error", message? }
   const [startState, setStartState] = useState(null);
 
@@ -151,66 +171,65 @@ function WorkflowRow({ workflow, connected, start, retry }) {
   };
 
   return (
-    <Row>
-      <RowHeader>
+    <Row $selected={selected}>
+      <SelectButton
+        type="button"
+        onClick={select}
+        aria-current={selected || undefined}
+      >
         <Details>
           <Name>{id}</Name>
           <Meta>
             {triggers?.event?.type ?? "No trigger"} · Updated{" "}
             <Time value={updatedAt} />
           </Meta>
-          {workflow.steps.length > 0 && (
-            <Meta>Steps: {workflow.steps.join(", ")}</Meta>
-          )}
           {!url && <Meta>Waiting for its app to sync.</Meta>}
         </Details>
-        <Actions>
-          <Button
-            type="button"
-            onClick={handleStart}
-            disabled={
-              !connected || !url || startState?.status === "starting"
-            }
-            aria-label={`Start a run of ${id}`}
-          >
-            {startState?.status === "starting" ? "Starting…" : "Start"}
-          </Button>
-          <span role="status">
-            {startState?.status === "started" && <Meta>Run started.</Meta>}
-            {startState?.status === "error" && (
-              <ErrorText>{startState.message}</ErrorText>
-            )}
-          </span>
-        </Actions>
-      </RowHeader>
-      {runs.length > 0 ? (
-        <Runs aria-label={`Latest runs of ${id}`}>
-          {runs.map((run) => (
-            <RunItem
-              key={run.id}
-              workflowId={id}
-              labels={workflow.steps}
-              run={run}
-              canRetry={connected && Boolean(url)}
-              retry={retry}
-            />
-          ))}
-        </Runs>
-      ) : (
-        <Meta>No runs yet.</Meta>
-      )}
+      </SelectButton>
+      <Actions>
+        <Button
+          type="button"
+          onClick={handleStart}
+          disabled={!connected || !url || startState?.status === "starting"}
+          aria-label={`Start a run of ${id}`}
+        >
+          {startState?.status === "starting" ? "Starting…" : "Start"}
+        </Button>
+        <span role="status">
+          {startState?.status === "started" && <Meta>Run started.</Meta>}
+          {startState?.status === "error" && (
+            <ErrorText>{startState.message}</ErrorText>
+          )}
+        </span>
+      </Actions>
     </Row>
   );
 }
 
 export default function WorkflowList() {
   const { workflows, connection, reconnect, start, retry } = useWorkflows();
+  // IDs rather than objects, so the panes show each update from the server.
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState(null);
+  const [selectedRunId, setSelectedRunId] = useState(null);
+  const connected = connection === "open";
 
-  let content;
+  const selectedWorkflow = workflows?.find(
+    ({ id }) => id === selectedWorkflowId,
+  );
+  const selectedRun = selectedWorkflow?.runs.find(
+    ({ id }) => id === selectedRunId,
+  );
+
+  const selectWorkflow = (id) => {
+    setSelectedWorkflowId(id);
+    if (id !== selectedWorkflowId) setSelectedRunId(null);
+  };
+
+  let workflowsContent;
   if (!workflows && connection !== "closed") {
-    content = <p role="status">Loading workflows…</p>;
+    workflowsContent = <p role="status">Loading workflows…</p>;
   } else if (!workflows) {
-    content = (
+    workflowsContent = (
       <ErrorMessage role="alert">
         <p>
           Can't connect to the workflow server. Check that it's running.
@@ -222,36 +241,84 @@ export default function WorkflowList() {
       </ErrorMessage>
     );
   } else if (!workflows.length) {
-    content = (
-      <p>
+    workflowsContent = (
+      <Placeholder>
         No workflows yet. Workflows appear here after the runner creates them.
-      </p>
+      </Placeholder>
     );
   } else {
-    content = (
+    workflowsContent = (
       <List>
         {workflows.map((workflow) => (
           <WorkflowRow
             key={workflow.id}
             workflow={workflow}
-            connected={connection === "open"}
+            selected={workflow.id === selectedWorkflowId}
+            select={() => selectWorkflow(workflow.id)}
+            connected={connected}
             start={start}
-            retry={retry}
           />
         ))}
       </List>
     );
   }
 
+  let runsContent;
+  if (!selectedWorkflow) {
+    runsContent = <Placeholder>Select a workflow to see its runs.</Placeholder>;
+  } else if (!selectedWorkflow.runs.length) {
+    runsContent = <Placeholder>No runs yet.</Placeholder>;
+  } else {
+    runsContent = (
+      <List aria-label={`Latest runs of ${selectedWorkflow.id}`}>
+        {selectedWorkflow.runs.map((run) => (
+          <RunRow
+            key={run.id}
+            run={run}
+            selected={run.id === selectedRunId}
+            select={() => setSelectedRunId(run.id)}
+          />
+        ))}
+      </List>
+    );
+  }
+
+  let stepsContent;
+  if (!selectedRun) {
+    stepsContent = <Placeholder>Select a run to see its steps.</Placeholder>;
+  } else {
+    stepsContent = (
+      <RunDetail
+        workflowId={selectedWorkflow.id}
+        labels={selectedWorkflow.steps}
+        run={selectedRun}
+        canRetry={connected && Boolean(selectedWorkflow.url)}
+        retry={retry}
+      />
+    );
+  }
+
   return (
-    <Section aria-labelledby="workflows-heading">
-      <h2 id="workflows-heading">Workflows</h2>
+    <Section aria-label="Workflows and their runs">
       {workflows && connection === "closed" && (
         <Meta as="p" role="status">
           Lost connection to the workflow server. Reconnecting…
         </Meta>
       )}
-      {content}
+      <Panes>
+        <Pane aria-labelledby="workflows-heading">
+          <PaneHeading id="workflows-heading">Workflows</PaneHeading>
+          {workflowsContent}
+        </Pane>
+        <Pane aria-labelledby="runs-heading">
+          <PaneHeading id="runs-heading">Runs</PaneHeading>
+          {runsContent}
+        </Pane>
+        <Pane aria-labelledby="steps-heading">
+          <PaneHeading id="steps-heading">Steps</PaneHeading>
+          {stepsContent}
+        </Pane>
+      </Panes>
     </Section>
   );
 }

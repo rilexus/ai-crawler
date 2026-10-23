@@ -1,8 +1,38 @@
 import styled from "styled-components";
 
 export const Section = styled.section`
-  max-width: 40rem;
   margin-top: 2rem;
+`;
+
+// Workflows, the selected workflow's runs, and the selected run's steps,
+// side by side. Narrow windows stack the panes instead of squeezing them.
+export const Panes = styled.div`
+  display: grid;
+  grid-template-columns: minmax(16rem, 1fr) minmax(14rem, 1fr) minmax(
+      20rem,
+      1.5fr
+    );
+  gap: 1.5rem;
+  align-items: start;
+
+  @media (max-width: 60rem) {
+    grid-template-columns: 1fr;
+  }
+`;
+
+export const Pane = styled.section`
+  min-width: 0;
+`;
+
+export const PaneHeading = styled.h2`
+  margin: 0 0 0.75rem;
+  font-size: 1.125rem;
+`;
+
+// #595959 on white has a 7:1 contrast ratio.
+export const Placeholder = styled.p`
+  margin: 0;
+  color: #595959;
 `;
 
 export const List = styled.ul`
@@ -11,48 +41,57 @@ export const List = styled.ul`
   padding: 0;
   border: 1px solid #c4c4c4;
   border-radius: 8px;
+  overflow: hidden;
 `;
 
-// A workflow template, with its latest runs below it.
-export const Row = styled.li`
+// A selectable workflow or run. The selected row keeps a highlight, which
+// ties it to the pane it fills. #1f1f1f on #e8f0fe has a 14.5:1 contrast
+// ratio.
+export const Row = styled.li<{ $selected?: boolean }>`
   display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  padding: 0.75rem 1rem;
+  align-items: center;
+  gap: 0.5rem;
+  border-inline-start: 3px solid
+    ${({ $selected }) => ($selected ? "#0b57d0" : "transparent")};
+  background: ${({ $selected }) => ($selected ? "#e8f0fe" : "transparent")};
 
   & + & {
     border-top: 1px solid #c4c4c4;
   }
 `;
 
-export const RowHeader = styled.div`
+// Fills the row, so the whole row except its actions selects it.
+export const SelectButton = styled.button`
   display: flex;
-  justify-content: space-between;
+  flex: 1;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 1rem;
-`;
-
-export const Runs = styled.ol`
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-`;
-
-// One run of the workflow, set off from the template by an indent and a
-// rule.
-export const Run = styled.li`
+  gap: 0.25rem;
   min-width: 0;
-  padding-inline-start: 0.75rem;
-  border-inline-start: 3px solid #c4c4c4;
+  min-height: 2.75rem;
+  padding: 0.75rem 1rem;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+
+  &:hover {
+    background: rgb(0 0 0 / 4%);
+  }
+
+  &:focus-visible {
+    outline: 2px solid #0b57d0;
+    outline-offset: -2px;
+  }
 `;
 
 export const RunHeader = styled.div`
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  margin-bottom: 0.5rem;
 `;
 
 export const Details = styled.div`
@@ -145,6 +184,7 @@ export const Actions = styled.div`
   align-items: flex-end;
   gap: 0.25rem;
   flex-shrink: 0;
+  padding-inline-end: 1rem;
 `;
 
 export const ErrorMessage = styled.div`
