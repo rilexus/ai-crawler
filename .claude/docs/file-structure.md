@@ -69,6 +69,12 @@ Keep a feature's backend and frontend together in one folder:
     import the component as `./components/<Name>`.
 - **Entry point:** Keep `<feature>/web/index.jsx` limited to the root render,
   so Fast Refresh works.
+- **Global styles and colors:** Put page-wide styles in
+  `<feature>/web/global-styles.ts` as a `createGlobalStyle` named
+  `GlobalStyle`, rendered once in `App.jsx`. Define colors there as CSS
+  custom properties named by role (`--color-error`, not `--color-red`), with
+  light and dark values. Component styles use `var(--color-…)`, never literal
+  colors.
 
 ## Browser automation
 

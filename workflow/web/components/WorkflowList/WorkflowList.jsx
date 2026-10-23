@@ -1,7 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Actions,
+  BackButton,
+  Banner,
   Button,
+  COMPACT_QUERY,
   Details,
   ErrorMessage,
   ErrorText,
@@ -13,6 +16,7 @@ import {
   Panes,
   Placeholder,
   Row,
+  RowStatus,
   RunHeader,
   Section,
   SelectButton,
@@ -23,6 +27,7 @@ import {
   Steps,
   StepStatus,
 } from "./styles";
+import useSelection from "./useSelection";
 import useWorkflows from "./useWorkflows";
 
 const dateFormat = new Intl.DateTimeFormat(undefined, {
@@ -31,14 +36,47 @@ const dateFormat = new Intl.DateTimeFormat(undefined, {
 });
 
 const STATUS_LABELS = {
-  init: "Init",
+  init: "Pending",
   running: "Running",
   finished: "Finished",
-  error: "Error",
+  error: "Failed",
   skipped: "Skipped",
 };
 
 const statusLabel = (status) => STATUS_LABELS[status] ?? status;
+
+// Panes from parent to child. In a narrow window, a pane earlier in this list
+// than the one before it means the person went back.
+const PANE_ORDER = ["workflows", "runs", "steps"];
+
+function WarningIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+      <path
+        d="M10 2 1 18h18L10 2Zm0 5v5m0 2.5v.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function useMediaQuery(query) {
+  const [matches, setMatches] = useState(() => matchMedia(query).matches);
+
+  useEffect(() => {
+    const list = matchMedia(query);
+    const update = () => setMatches(list.matches);
+    update();
+    list.addEventListener("change", update);
+    return () => list.removeEventListener("change", update);
+  }, [query]);
+
+  return matches;
+}
 
 function Time({ value }) {
   return (
@@ -61,8 +99,21 @@ function stepsWithStatus(labels, run) {
   }));
 }
 
-// The steps of the selected run, with their results and errors.
-function RunDetail({ workflowId, labels, run, canRetry, retry }) {
+// "Step 3 of 5" for a running run, or null.
+function progress(labels, run) {
+  if (run.status !== "running") return null;
+  const steps = stepsWithStatus(labels, run);
+  if (!steps.length) return null;
+  const done = steps.filter(
+    ({ status }) => status === "finished" || status === "skipped",
+  ).length;
+  return `Step ${Math.min(done + 1, steps.length)} of ${steps.length}`;
+}
+
+// The steps of the selected run, with their results and errors. A run the
+// server no longer lists among the latest runs is `stale`: it shows its last
+// known state.
+function RunDetail({ workflowId, labels, run, stale, canRetry, retry }) {
   const steps = stepsWithStatus(labels, run);
   // null, or { status: "retrying" | "error", message? }
   const [retryState, setRetryState] = useState(null);
@@ -91,15 +142,23 @@ function RunDetail({ workflowId, labels, run, canRetry, retry }) {
   );
   // A run can fail outside a step, when its callback throws.
   const failedStep = steps.some(({ error }) => error);
+  const runProgress = progress(labels, run);
 
   return (
     <div>
       <RunHeader>
         <Meta>
           {workflowId} · Started <Time value={run.startedAt} />
+          {runProgress && ` · ${runProgress}`}
         </Meta>
         <StepStatus $status={run.status}>{statusLabel(run.status)}</StepStatus>
       </RunHeader>
+      {stale && (
+        <Meta as="p" role="status">
+          This run is no longer among the latest runs, so its status doesn't
+          update.
+        </Meta>
+      )}
       <Steps aria-label="Steps">
         {steps.map(({ label, status, result, error }) => (
           <Step key={label}>
@@ -140,16 +199,19 @@ function RunDetail({ workflowId, labels, run, canRetry, retry }) {
   );
 }
 
-function RunRow({ run, selected, select }) {
+function RunRow({ run, labels, selected, select, buttonRef }) {
+  const runProgress = progress(labels, run);
   return (
     <Row $selected={selected}>
       <SelectButton
+        ref={buttonRef}
         type="button"
         onClick={select}
         aria-current={selected || undefined}
       >
         <Meta>
           Started <Time value={run.startedAt} />
+          {runProgress && ` · ${runProgress}`}
         </Meta>
         <StepStatus $status={run.status}>{statusLabel(run.status)}</StepStatus>
       </SelectButton>
@@ -157,15 +219,25 @@ function RunRow({ run, selected, select }) {
   );
 }
 
-function WorkflowRow({ workflow, selected, select, connected, start }) {
+// `waiting` is true after a start succeeds, until the new run appears and
+// the panes open it.
+function WorkflowRow({
+  workflow,
+  selected,
+  select,
+  buttonRef,
+  connected,
+  start,
+  waiting,
+}) {
   const { id, triggers, url, updatedAt } = workflow;
-  // null, or { status: "starting" | "started" | "error", message? }
+  // null, or { status: "starting" | "error", message? }
   const [startState, setStartState] = useState(null);
 
   const handleStart = () => {
     setStartState({ status: "starting" });
     start(id).then(
-      () => setStartState({ status: "started" }),
+      () => setStartState(null),
       (error) => setStartState({ status: "error", message: error.message }),
     );
   };
@@ -173,6 +245,7 @@ function WorkflowRow({ workflow, selected, select, connected, start }) {
   return (
     <Row $selected={selected}>
       <SelectButton
+        ref={buttonRef}
         type="button"
         onClick={select}
         aria-current={selected || undefined}
@@ -195,13 +268,13 @@ function WorkflowRow({ workflow, selected, select, connected, start }) {
         >
           {startState?.status === "starting" ? "Starting…" : "Start"}
         </Button>
-        <span role="status">
-          {startState?.status === "started" && <Meta>Run started.</Meta>}
-          {startState?.status === "error" && (
-            <ErrorText>{startState.message}</ErrorText>
-          )}
-        </span>
       </Actions>
+      <RowStatus role="status">
+        {waiting && <Meta>Run started. Opening it…</Meta>}
+        {startState?.status === "error" && (
+          <ErrorText>{startState.message}</ErrorText>
+        )}
+      </RowStatus>
     </Row>
   );
 }
@@ -209,21 +282,106 @@ function WorkflowRow({ workflow, selected, select, connected, start }) {
 export default function WorkflowList() {
   const { workflows, connection, reconnect, start, retry } = useWorkflows();
   // IDs rather than objects, so the panes show each update from the server.
-  const [selectedWorkflowId, setSelectedWorkflowId] = useState(null);
-  const [selectedRunId, setSelectedRunId] = useState(null);
+  const [selection, select, back] = useSelection();
+  const { workflowId: selectedWorkflowId, runId: selectedRunId } = selection;
+  // The selected run as last listed, kept after it drops out of the latest
+  // runs.
+  const [knownRun, setKnownRun] = useState(null);
+  // null, or { workflowId, knownRunIds } after a start succeeds, until the
+  // new run appears.
+  const [pendingStart, setPendingStart] = useState(null);
   const connected = connection === "open";
+  const compact = useMediaQuery(COMPACT_QUERY);
+  // In a narrow window, each selection opens a new pane, so it gets a history
+  // entry for the browser's Back button. Side by side, it replaces the entry.
+  const navigate = (next) => select(next, { push: compact });
 
   const selectedWorkflow = workflows?.find(
     ({ id }) => id === selectedWorkflowId,
   );
-  const selectedRun = selectedWorkflow?.runs.find(
+  const listedRun = selectedWorkflow?.runs.find(
     ({ id }) => id === selectedRunId,
   );
+  const selectedRun =
+    listedRun ?? (knownRun?.id === selectedRunId ? knownRun : null);
 
-  const selectWorkflow = (id) => {
-    setSelectedWorkflowId(id);
-    if (id !== selectedWorkflowId) setSelectedRunId(null);
+  useEffect(() => {
+    if (listedRun) setKnownRun(listedRun);
+  }, [listedRun]);
+
+  const selectWorkflow = (id) =>
+    navigate({
+      workflowId: id,
+      runId: id === selectedWorkflowId ? selectedRunId : null,
+    });
+  const selectRun = (id) =>
+    navigate({ workflowId: selectedWorkflowId, runId: id });
+
+  // Remembers the workflow's runs before the start, so the new run is the one
+  // missing from them. The server's answer doesn't include the run's ID.
+  const startRun = (id) => {
+    const knownRunIds = new Set(
+      workflows
+        .find((workflow) => workflow.id === id)
+        ?.runs.map((run) => run.id),
+    );
+    return start(id).then(() => {
+      setPendingStart({ workflowId: id, knownRunIds });
+      navigate({ workflowId: id, runId: null });
+    });
   };
+
+  // Opens the new run once it appears, unless the person selected something
+  // else in the meantime.
+  useEffect(() => {
+    if (!pendingStart) return;
+    if (selectedWorkflowId !== pendingStart.workflowId || selectedRunId) {
+      setPendingStart(null);
+      return;
+    }
+    const run = workflows
+      ?.find(({ id }) => id === pendingStart.workflowId)
+      ?.runs.find(({ id }) => !pendingStart.knownRunIds.has(id));
+    if (!run) return;
+    setPendingStart(null);
+    select({ workflowId: pendingStart.workflowId, runId: run.id });
+  }, [workflows, pendingStart, selectedWorkflowId, selectedRunId, select]);
+
+  // In a narrow window, the last pane with a selection to show is the only
+  // one on screen. A selection hides the row that had focus, so focus moves
+  // to the heading of the pane that replaces it. Going back, focus returns
+  // to the row the person came from.
+  let activePane = "workflows";
+  if (selectedRun) activePane = "steps";
+  else if (selectedWorkflow) activePane = "runs";
+  const headings = {
+    workflows: useRef(null),
+    runs: useRef(null),
+    steps: useRef(null),
+  };
+  // Select buttons by "workflow:<id>" or "run:<id>".
+  const rows = useRef(new Map());
+  const rowRef = (key) => (element) => {
+    if (element) rows.current.set(key, element);
+    else rows.current.delete(key);
+  };
+  const previous = useRef({ pane: activePane, ...selection });
+  useEffect(() => {
+    const from = previous.current;
+    previous.current = { pane: activePane, ...selection };
+    if (!compact || from.pane === activePane) return;
+    const wentBack =
+      PANE_ORDER.indexOf(activePane) < PANE_ORDER.indexOf(from.pane);
+    const row =
+      wentBack &&
+      rows.current.get(
+        activePane === "workflows"
+          ? `workflow:${from.workflowId}`
+          : `run:${from.runId}`,
+      );
+    (row || headings[activePane].current)?.focus();
+  });
+  const showPane = (pane) => !compact || pane === activePane;
 
   let workflowsContent;
   if (!workflows && connection !== "closed") {
@@ -255,8 +413,10 @@ export default function WorkflowList() {
             workflow={workflow}
             selected={workflow.id === selectedWorkflowId}
             select={() => selectWorkflow(workflow.id)}
+            buttonRef={rowRef(`workflow:${workflow.id}`)}
             connected={connected}
-            start={start}
+            start={startRun}
+            waiting={pendingStart?.workflowId === workflow.id}
           />
         ))}
       </List>
@@ -267,7 +427,11 @@ export default function WorkflowList() {
   if (!selectedWorkflow) {
     runsContent = <Placeholder>Select a workflow to see its runs.</Placeholder>;
   } else if (!selectedWorkflow.runs.length) {
-    runsContent = <Placeholder>No runs yet.</Placeholder>;
+    runsContent = (
+      <Placeholder>
+        No runs yet. To run this workflow, select Start next to it in Workflows.
+      </Placeholder>
+    );
   } else {
     runsContent = (
       <List aria-label={`Latest runs of ${selectedWorkflow.id}`}>
@@ -275,8 +439,10 @@ export default function WorkflowList() {
           <RunRow
             key={run.id}
             run={run}
+            labels={selectedWorkflow.steps}
             selected={run.id === selectedRunId}
-            select={() => setSelectedRunId(run.id)}
+            select={() => selectRun(run.id)}
+            buttonRef={rowRef(`run:${run.id}`)}
           />
         ))}
       </List>
@@ -292,6 +458,7 @@ export default function WorkflowList() {
         workflowId={selectedWorkflow.id}
         labels={selectedWorkflow.steps}
         run={selectedRun}
+        stale={!listedRun}
         canRetry={connected && Boolean(selectedWorkflow.url)}
         retry={retry}
       />
@@ -300,24 +467,64 @@ export default function WorkflowList() {
 
   return (
     <Section aria-label="Workflows and their runs">
-      {workflows && connection === "closed" && (
-        <Meta as="p" role="status">
-          Lost connection to the workflow server. Reconnecting…
-        </Meta>
-      )}
-      <Panes>
-        <Pane aria-labelledby="workflows-heading">
-          <PaneHeading id="workflows-heading">Workflows</PaneHeading>
-          {workflowsContent}
-        </Pane>
-        <Pane aria-labelledby="runs-heading">
-          <PaneHeading id="runs-heading">Runs</PaneHeading>
-          {runsContent}
-        </Pane>
-        <Pane aria-labelledby="steps-heading">
-          <PaneHeading id="steps-heading">Steps</PaneHeading>
-          {stepsContent}
-        </Pane>
+      {/* Reconnect attempts are "connecting", so check for "open" to keep
+          the banner up between them. */}
+      <div role="status">
+        {workflows && !connected && (
+          <Banner>
+            <WarningIcon />
+            Lost connection to the workflow server. You can't start or retry
+            runs until it reconnects. Reconnecting…
+          </Banner>
+        )}
+      </div>
+      <Panes $compact={compact}>
+        {showPane("workflows") && (
+          <Pane $compact={compact} aria-labelledby="workflows-heading">
+            <PaneHeading
+              id="workflows-heading"
+              ref={headings.workflows}
+              tabIndex={-1}
+            >
+              Workflows
+            </PaneHeading>
+            {workflowsContent}
+          </Pane>
+        )}
+        {showPane("runs") && (
+          <Pane $compact={compact} aria-labelledby="runs-heading">
+            {compact && (
+              <BackButton
+                type="button"
+                onClick={() => back({ workflowId: null, runId: null })}
+              >
+                Back to workflows
+              </BackButton>
+            )}
+            <PaneHeading id="runs-heading" ref={headings.runs} tabIndex={-1}>
+              {selectedWorkflow ? `Runs of ${selectedWorkflow.id}` : "Runs"}
+            </PaneHeading>
+            {runsContent}
+          </Pane>
+        )}
+        {showPane("steps") && (
+          <Pane $compact={compact} aria-labelledby="steps-heading">
+            {compact && (
+              <BackButton
+                type="button"
+                onClick={() =>
+                  back({ workflowId: selectedWorkflowId, runId: null })
+                }
+              >
+                Back to runs
+              </BackButton>
+            )}
+            <PaneHeading id="steps-heading" ref={headings.steps} tabIndex={-1}>
+              Steps
+            </PaneHeading>
+            {stepsContent}
+          </Pane>
+        )}
       </Panes>
     </Section>
   );
