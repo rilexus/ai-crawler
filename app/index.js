@@ -36,7 +36,22 @@ await workflow.create(
       return 3;
     });
 
-    console.log({ first, second, third });
+    return { first, second, third };
+  },
+);
+
+await workflow.create(
+  {
+    id: "second-workflow",
+    triggers: { event: { type: "event/start-second-workflow" } },
+  },
+  async ({ step }) => {
+    const some = await step("first", async () => {
+      await sleep(2000);
+      return 1;
+    });
+
+    return some;
   },
 );
 

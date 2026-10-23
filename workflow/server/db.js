@@ -54,11 +54,17 @@ await run(`
     workflow_id TEXT NOT NULL REFERENCES workflows(id),
     event TEXT,
     status TEXT NOT NULL,
+    result TEXT,
     error TEXT,
     started_at INTEGER NOT NULL,
     finished_at INTEGER
   )
 `);
+// Databases created before the result column existed.
+const runColumns = await all("PRAGMA table_info(runs)");
+if (!runColumns.some(({ name }) => name === "result")) {
+  await run("ALTER TABLE runs ADD COLUMN result TEXT");
+}
 await run(`
   CREATE TABLE IF NOT EXISTS steps (
     run_id TEXT NOT NULL REFERENCES runs(id),
@@ -89,6 +95,7 @@ const formatRun = (row) =>
     workflowId: row.workflow_id,
     event: fromJSON(row.event),
     status: row.status,
+    result: fromJSON(row.result),
     error: fromJSON(row.error),
     startedAt: row.started_at,
     finishedAt: row.finished_at,
@@ -110,28 +117,21 @@ export async function listWorkflows() {
   return rows.map(formatWorkflow);
 }
 
-// Returns every workflow with its latest run and that run's steps in
-// `lastRun`, or null if it hasn't run yet.
-export async function listWorkflowsWithLastRun() {
+// Returns every workflow with its latest `runsPerWorkflow` runs in `runs`,
+// newest first, each with its steps.
+export async function listWorkflowsWithRuns({ runsPerWorkflow = 10 } = {}) {
   const workflows = await listWorkflows();
-  const runs = await all(
-    `SELECT * FROM runs AS r
-     WHERE started_at = (
-       SELECT MAX(started_at) FROM runs WHERE workflow_id = r.workflow_id
-     )`,
+  return Promise.all(
+    workflows.map(async (workflow) => {
+      const rows = await all(
+        `SELECT id FROM runs WHERE workflow_id = ?
+         ORDER BY started_at DESC LIMIT ?`,
+        [workflow.id, runsPerWorkflow],
+      );
+      const runs = await Promise.all(rows.map(({ id }) => getRunWithSteps(id)));
+      return { ...workflow, runs };
+    }),
   );
-  const lastRuns = new Map(
-    await Promise.all(
-      runs.map(async ({ id, workflow_id }) => [
-        workflow_id,
-        await getRunWithSteps(id),
-      ]),
-    ),
-  );
-  return workflows.map((workflow) => ({
-    ...workflow,
-    lastRun: lastRuns.get(workflow.id) ?? null,
-  }));
 }
 
 export async function getWorkflow(id) {
@@ -213,6 +213,7 @@ export async function createRun(workflowId, { event = null }) {
 export async function updateRun(id, fields) {
   const columns = {
     status: ["status", fields.status],
+    result: ["result", toJSON(fields.result)],
     error: ["error", toJSON(fields.error)],
     finishedAt: ["finished_at", fields.finishedAt],
   };

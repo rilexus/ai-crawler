@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Actions,
   Button,
@@ -9,9 +9,14 @@ import {
   Meta,
   Name,
   Row,
+  RowHeader,
+  Run,
+  RunHeader,
+  Runs,
   Section,
   Step,
   StepError,
+  StepFailure,
   StepResult,
   Steps,
   StepStatus,
@@ -33,13 +38,19 @@ const STATUS_LABELS = {
 
 const statusLabel = (status) => STATUS_LABELS[status] ?? status;
 
-// Returns the registered steps with their status in the latest run, followed
-// by steps the run reached that weren't registered. Steps the run hasn't
-// reached yet are "init".
-function stepsWithStatus(labels, lastRun) {
-  const runSteps = new Map(
-    (lastRun?.steps ?? []).map((step) => [step.label, step]),
+function Time({ value }) {
+  return (
+    <time dateTime={new Date(value).toISOString()}>
+      {dateFormat.format(value)}
+    </time>
   );
+}
+
+// Returns the workflow's step labels with their status in the run, followed
+// by steps the run reached that the workflow didn't list. Steps the run
+// hasn't reached yet are "init".
+function stepsWithStatus(labels, run) {
+  const runSteps = new Map(run.steps.map((step) => [step.label, step]));
   return [...new Set([...labels, ...runSteps.keys()])].map((label) => ({
     label,
     status: runSteps.get(label)?.status ?? "init",
@@ -48,79 +59,152 @@ function stepsWithStatus(labels, lastRun) {
   }));
 }
 
-function WorkflowRow({ workflow, canStart, start }) {
-  const { id, triggers, url, updatedAt, lastRun } = workflow;
-  const steps = stepsWithStatus(workflow.steps, lastRun);
+function RunItem({ workflowId, labels, run, canRetry, retry }) {
+  const steps = stepsWithStatus(labels, run);
+  // null, or { status: "retrying" | "error", message? }
+  const [retryState, setRetryState] = useState(null);
+  const failed = run.status === "error";
+
+  // The run's new status ends the retry, so the button stays busy until the
+  // run is running again.
+  useEffect(() => setRetryState(null), [run.status]);
+
+  const handleRetry = () => {
+    setRetryState({ status: "retrying" });
+    retry(run.id).catch((error) =>
+      setRetryState({ status: "error", message: error.message }),
+    );
+  };
+
+  const retryButton = failed && (
+    <Button
+      type="button"
+      onClick={handleRetry}
+      disabled={!canRetry || retryState?.status === "retrying"}
+      aria-label={`Retry the run of ${workflowId} started ${dateFormat.format(run.startedAt)}`}
+    >
+      {retryState?.status === "retrying" ? "Retrying…" : "Retry"}
+    </Button>
+  );
+  // A run can fail outside a step, when its callback throws.
+  const failedStep = steps.some(({ error }) => error);
+
+  return (
+    <Run>
+      <RunHeader>
+        <Meta>
+          Run started <Time value={run.startedAt} />
+        </Meta>
+        <StepStatus $status={run.status}>{statusLabel(run.status)}</StepStatus>
+      </RunHeader>
+      <Steps aria-label="Steps">
+        {steps.map(({ label, status, result, error }) => (
+          <Step key={label}>
+            <span>{label}</span>
+            <StepStatus $status={status}>{statusLabel(status)}</StepStatus>
+            {/* The server stores a step that returned undefined as null. */}
+            {status === "finished" && result !== null && (
+              <StepResult tabIndex={0} aria-label={`Value ${label} returned`}>
+                {JSON.stringify(result, null, 2)}
+              </StepResult>
+            )}
+            {error && (
+              <StepFailure>
+                <StepError>{error}</StepError>
+                {retryButton}
+              </StepFailure>
+            )}
+          </Step>
+        ))}
+      </Steps>
+      {run.status === "finished" && run.result !== null && (
+        <StepResult tabIndex={0} aria-label="Value the run returned">
+          {JSON.stringify(run.result, null, 2)}
+        </StepResult>
+      )}
+      {failed && !failedStep && (
+        <StepFailure>
+          {run.error && <StepError>{run.error.message}</StepError>}
+          {retryButton}
+        </StepFailure>
+      )}
+      <span role="status">
+        {retryState?.status === "error" && (
+          <ErrorText>{retryState.message}</ErrorText>
+        )}
+      </span>
+    </Run>
+  );
+}
+
+function WorkflowRow({ workflow, connected, start, retry }) {
+  const { id, triggers, url, updatedAt, runs } = workflow;
   // null, or { status: "starting" | "started" | "error", message? }
-  const [result, setResult] = useState(null);
+  const [startState, setStartState] = useState(null);
 
   const handleStart = () => {
-    setResult({ status: "starting" });
+    setStartState({ status: "starting" });
     start(id).then(
-      () => setResult({ status: "started" }),
-      (error) => setResult({ status: "error", message: error.message }),
+      () => setStartState({ status: "started" }),
+      (error) => setStartState({ status: "error", message: error.message }),
     );
   };
 
   return (
     <Row>
-      <Details>
-        <Name>{id}</Name>
-        <Meta>
-          {triggers?.event?.type ?? "No trigger"} · Updated{" "}
-          <time dateTime={new Date(updatedAt).toISOString()}>
-            {dateFormat.format(updatedAt)}
-          </time>
-        </Meta>
-        {!url && <Meta>Waiting for its app to sync.</Meta>}
-        {lastRun && (
+      <RowHeader>
+        <Details>
+          <Name>{id}</Name>
           <Meta>
-            Last run: {statusLabel(lastRun.status)} · Started{" "}
-            <time dateTime={new Date(lastRun.startedAt).toISOString()}>
-              {dateFormat.format(lastRun.startedAt)}
-            </time>
+            {triggers?.event?.type ?? "No trigger"} · Updated{" "}
+            <Time value={updatedAt} />
           </Meta>
-        )}
-        {steps.length > 0 && (
-          <Steps aria-label={`Steps of ${id}`}>
-            {steps.map(({ label, status, result, error }) => (
-              <Step key={label}>
-                <span>{label}</span>
-                <StepStatus $status={status}>{statusLabel(status)}</StepStatus>
-                {/* The server stores a step that returned undefined as null. */}
-                {status === "finished" && result !== null && (
-                  <StepResult tabIndex={0} aria-label={`Value ${label} returned`}>
-                    {JSON.stringify(result, null, 2)}
-                  </StepResult>
-                )}
-                {error && <StepError>{error}</StepError>}
-              </Step>
-            ))}
-          </Steps>
-        )}
-      </Details>
-      <Actions>
-        <Button
-          type="button"
-          onClick={handleStart}
-          disabled={!canStart || !url || result?.status === "starting"}
-          aria-label={`Start ${id}`}
-        >
-          {result?.status === "starting" ? "Starting…" : "Start"}
-        </Button>
-        <span role="status">
-          {result?.status === "started" && <Meta>Run started.</Meta>}
-          {result?.status === "error" && (
-            <ErrorText>{result.message}</ErrorText>
+          {workflow.steps.length > 0 && (
+            <Meta>Steps: {workflow.steps.join(", ")}</Meta>
           )}
-        </span>
-      </Actions>
+          {!url && <Meta>Waiting for its app to sync.</Meta>}
+        </Details>
+        <Actions>
+          <Button
+            type="button"
+            onClick={handleStart}
+            disabled={
+              !connected || !url || startState?.status === "starting"
+            }
+            aria-label={`Start a run of ${id}`}
+          >
+            {startState?.status === "starting" ? "Starting…" : "Start"}
+          </Button>
+          <span role="status">
+            {startState?.status === "started" && <Meta>Run started.</Meta>}
+            {startState?.status === "error" && (
+              <ErrorText>{startState.message}</ErrorText>
+            )}
+          </span>
+        </Actions>
+      </RowHeader>
+      {runs.length > 0 ? (
+        <Runs aria-label={`Latest runs of ${id}`}>
+          {runs.map((run) => (
+            <RunItem
+              key={run.id}
+              workflowId={id}
+              labels={workflow.steps}
+              run={run}
+              canRetry={connected && Boolean(url)}
+              retry={retry}
+            />
+          ))}
+        </Runs>
+      ) : (
+        <Meta>No runs yet.</Meta>
+      )}
     </Row>
   );
 }
 
 export default function WorkflowList() {
-  const { workflows, connection, reconnect, start } = useWorkflows();
+  const { workflows, connection, reconnect, start, retry } = useWorkflows();
 
   let content;
   if (!workflows && connection !== "closed") {
@@ -150,8 +234,9 @@ export default function WorkflowList() {
           <WorkflowRow
             key={workflow.id}
             workflow={workflow}
-            canStart={connection === "open"}
+            connected={connection === "open"}
             start={start}
+            retry={retry}
           />
         ))}
       </List>

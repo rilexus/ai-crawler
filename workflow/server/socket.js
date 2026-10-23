@@ -1,20 +1,30 @@
 import { WebSocket, WebSocketServer } from "ws";
-import { startWorkflow } from "./apps.js";
+import { retryRun, startWorkflow } from "./apps.js";
 import * as db from "./db.js";
 
 // Messages are JSON objects with a `type`.
 //
 // Server to client:
 // - { type: "workflows", workflows: [...] }: the full workflow list. Each
-//   workflow has `lastRun`, its latest run with `steps`, or null. Sent on
-//   connect and after any workflow, run, or step changes.
+//   workflow has `runs`, its latest runs with their `steps`, newest first.
+//   Sent on connect and after any workflow, run, or step changes.
 // - { type: "start-result", requestId, workflowId, ok, error? }: the answer
 //   to a `start` message.
+// - { type: "retry-result", requestId, runId, ok, error? }: the answer to a
+//   `retry` message.
 //
 // Client to server:
-// - { type: "start", requestId, workflowId }: starts a run of the workflow.
-//   `requestId` is any value the client uses to match the answer.
+// - { type: "start", requestId, workflowId }: starts a new run of the
+//   workflow. `requestId` is any value the client uses to match the answer.
+// - { type: "retry", requestId, runId }: resumes a failed run.
 let wss = null;
+
+// Client message types, with the function that handles each and the field
+// that names its target.
+const ACTIONS = {
+  start: [startWorkflow, "workflowId"],
+  retry: [retryRun, "runId"],
+};
 
 function send(socket, message) {
   if (socket.readyState === WebSocket.OPEN) {
@@ -23,7 +33,7 @@ function send(socket, message) {
 }
 
 async function workflowsMessage() {
-  return { type: "workflows", workflows: await db.listWorkflowsWithLastRun() };
+  return { type: "workflows", workflows: await db.listWorkflowsWithRuns() };
 }
 
 async function handleMessage(socket, raw) {
@@ -34,20 +44,18 @@ async function handleMessage(socket, raw) {
     return;
   }
 
-  if (message.type === "start") {
-    const { requestId, workflowId } = message;
-    try {
-      await startWorkflow(workflowId);
-      send(socket, { type: "start-result", requestId, workflowId, ok: true });
-    } catch (error) {
-      send(socket, {
-        type: "start-result",
-        requestId,
-        workflowId,
-        ok: false,
-        error: error.message,
-      });
-    }
+  if (!Object.hasOwn(ACTIONS, message.type)) return;
+  const [action, field] = ACTIONS[message.type];
+  const answer = {
+    type: `${message.type}-result`,
+    requestId: message.requestId,
+    [field]: message[field],
+  };
+  try {
+    await action(message[field]);
+    send(socket, { ...answer, ok: true });
+  } catch (error) {
+    send(socket, { ...answer, ok: false, error: error.message });
   }
 }
 

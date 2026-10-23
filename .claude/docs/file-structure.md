@@ -27,9 +27,15 @@ Keep a feature's backend and frontend together in one folder:
   server, for example at `/api/workflow`. Don't configure the app's own URL:
   the workflow server syncs with it by calling PUT on that path. Add the
   path's full URL to `WORKFLOW_APP_URLS` on the workflow server.
-- **Workflow callback:** `create()` calls it once without running any step,
-  to register the step labels in the "init" state. Each `step()` returns
-  undefined there, so keep code outside steps free of side effects.
+- **Workflow callback:** `create()` registers a workflow template and calls
+  the callback once without running any step, to find its step labels. Each
+  `step()` returns undefined there, so keep code outside steps free of side
+  effects.
+- **Runs:** Each `run()` or matching event starts a new run with its own
+  event and step state, so runs of one workflow can overlap. Keep per-run
+  state in the run object, never in the template. A retry resumes a failed
+  run under the same ID, with finished step results that the workflow server
+  sends, so the app doesn't keep runs after they end.
 - **App behind a proxy or in a container:** If the URL the sync request
   reaches isn't the one the workflow server should call, set `serveHost` and
   `servePath` on `serve()`, or `WORKFLOW_SERVE_HOST` and `WORKFLOW_SERVE_PATH`

@@ -13,16 +13,46 @@ export const List = styled.ul`
   border-radius: 8px;
 `;
 
+// A workflow template, with its latest runs below it.
 export const Row = styled.li`
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 1rem;
+  flex-direction: column;
+  gap: 0.75rem;
   padding: 0.75rem 1rem;
 
   & + & {
     border-top: 1px solid #c4c4c4;
   }
+`;
+
+export const RowHeader = styled.div`
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+`;
+
+export const Runs = styled.ol`
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+`;
+
+// One run of the workflow, set off from the template by an indent and a
+// rule.
+export const Run = styled.li`
+  min-width: 0;
+  padding-inline-start: 0.75rem;
+  border-inline-start: 3px solid #c4c4c4;
+`;
+
+export const RunHeader = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
 `;
 
 export const Details = styled.div`
@@ -98,6 +128,15 @@ export const StepError = styled.p`
   color: #b00020;
   font-size: 0.75rem;
   overflow-wrap: anywhere;
+`;
+
+// Puts a failed step's error next to its Retry button.
+export const StepFailure = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.25rem 0 0.5rem;
 `;
 
 export const Actions = styled.div`

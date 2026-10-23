@@ -57,24 +57,60 @@ export function startSyncing() {
   setInterval(sync, SYNC_INTERVAL).unref();
 }
 
-// Sends the workflow's trigger event to its app, which starts a run. Throws
-// with a message for the UI if the workflow can't start.
-export async function startWorkflow(workflowId) {
+// Returns the workflow, or throws with a message for the UI if its app can't
+// be called.
+async function getSyncedWorkflow(workflowId) {
   const workflow = await db.getWorkflow(workflowId);
   if (!workflow) throw new Error(`Unknown workflow: ${workflowId}`);
   if (!workflow.url) throw new Error("The workflow's app hasn't synced yet.");
-  const type = workflow.triggers?.event?.type;
-  if (!type) throw new Error("The workflow has no event trigger.");
+  return workflow;
+}
 
-  const res = await request(workflow.url, {
+// Sends a POST to the app and returns its response body. Throws with the
+// app's error message if it refuses.
+async function postToApp(url, body) {
+  const res = await request(url, {
     method: "POST",
-    body: JSON.stringify({ type, data: null, workflowId }),
+    body: JSON.stringify(body),
   });
-  const body = await res.json().catch(() => null);
+  const data = await res.json().catch(() => null);
   if (!res.ok) {
     throw new Error(
-      body?.error ?? `The app responded with HTTP ${res.status}.`,
+      data?.error ?? `The app responded with HTTP ${res.status}.`,
     );
   }
-  return body;
+  return data;
+}
+
+// Sends the workflow's trigger event to its app, which starts a new run.
+// Throws with a message for the UI if the workflow can't start.
+export async function startWorkflow(workflowId) {
+  const workflow = await getSyncedWorkflow(workflowId);
+  const type = workflow.triggers?.event?.type;
+  if (!type) throw new Error("The workflow has no event trigger.");
+  return postToApp(workflow.url, { type, data: null, workflowId });
+}
+
+// Asks the app to resume a failed run with its event and the results of its
+// finished steps, so the app doesn't need to have kept them. Throws with a
+// message for the UI if the run can't be retried.
+export async function retryRun(runId) {
+  const run = await db.getRunWithSteps(runId);
+  if (!run) throw new Error(`Unknown run: ${runId}`);
+  if (run.status !== "error") {
+    throw new Error("Only a failed run can be retried.");
+  }
+  const workflow = await getSyncedWorkflow(run.workflowId);
+  return postToApp(
+    `${workflow.url}/runs/${encodeURIComponent(runId)}/retry`,
+    {
+      workflowId: run.workflowId,
+      event: run.event,
+      steps: run.steps.map(({ label, status, result }) => ({
+        label,
+        status,
+        result,
+      })),
+    },
+  );
 }
