@@ -272,75 +272,45 @@ The browser automation code lives in `lib/chrome.js`, `lib/browser.js`,
 `zod` and `ai`.
 
 ```js
-const Browser = require("./lib/browser");
+import Browser from "./lib/browser.js";
 
-const browser = await new Browser({ headless: false }).launch();
+const browser = await new Browser().connect();
 
 try {
   const page = await browser.goto("https://example.com");
   await page.click(await page.findByText("Learn more"));
+  await page.close();
 } finally {
   await browser.close();
 }
 ```
 
-### Start the browser
+### Connect to the browser
 
-`new Browser(options)` stores the launch options. `browser.launch()` starts
-Brave with remote debugging, connects to it, and resolves with the browser.
-`browser.close()` quits it.
+`Browser` works in the Brave you have open, with your own logins and
+cookies. It doesn't start a new browser or copy your profile.
 
-`lib/chrome.js` also gives you two ways to get a CDP connection to a browser
-that's already running:
+1. In Brave, go to `brave://inspect/#remote-debugging` and allow remote
+   debugging.
+1. Call `new Browser().connect()`. Brave might ask you to approve the
+   connection.
+
+`browser.goto(url)` opens a tab in your current Brave window.
+`browser.close()` disconnects and leaves Brave and its tabs open, so close
+the tabs you opened with `page.close()`.
+
+The `Browser` constructor accepts one option:
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `userDataDir` | Your Brave user data directory | Where Brave writes `DevToolsActivePort`, which holds the address to connect to. |
+
+`lib/chrome.js` also gives you two ways to get a raw CDP connection:
 
 | Function | What it does |
 | --- | --- |
 | `connectToChrome(host)` | Connects to a browser that's already running with `--remote-debugging-port`. Defaults to `http://127.0.0.1:9222`. |
-| `connectToRunningBrave()` | Connects to the Brave you have open, with your own profile. You must first allow remote debugging at `brave://inspect/#remote-debugging`, and Brave might ask you to approve each connection. |
-
-The `Browser` constructor accepts these options:
-
-| Option | Default | Description |
-| --- | --- | --- |
-| `headless` | `true` | Whether to run without a window. |
-| `userDataDir` | A temporary profile | A profile directory to start from. `close()` keeps it. A temporary profile is deleted on `close()`. |
-| `executablePath` | `CHROME_PATH`, then Brave | The browser executable. |
-| `args` | `[]` | Extra command-line flags. |
-| `timeout` | `30000` | Milliseconds to wait for the browser to start. |
-
-#### Use your logins and cookies
-
-Brave doesn't allow remote debugging on your default profile, so the crawler
-starts from a copy of it. `copyBraveProfile(destination)` copies your Brave
-profile, without its caches, and `index.js` keeps the copy in
-`~/.ai-crawler/brave-profile`:
-
-```js
-const userDataDir = path.join(os.homedir(), ".ai-crawler", "brave-profile");
-if (!existsSync(userDataDir)) await copyBraveProfile(userDataDir);
-
-const browser = await new Browser({
-  userDataDir,
-  headless: false,
-  args: ["--profile-directory=Default"],
-}).launch();
-```
-
-Keep these points in mind:
-
-- **The copy is a snapshot.** Logins you make later in your own Brave don't
-  carry over. To refresh the copy, delete `~/.ai-crawler/brave-profile`, and
-  the next run copies your profile again.
-- **Quit Brave before copying.** `copyBraveProfile` refuses to copy while Brave
-  is running, or to overwrite a copy that a crawler browser still uses.
-- **macOS asks for access.** Reading Brave's profile requires Full Disk
-  Access for the app you run Node.js from, such as Visual Studio Code or
-  Terminal. Turn it on in **System Settings** > **Privacy & Security** >
-  **Full Disk Access**, then restart that app. The first launch from the copy
-  might also ask for access to **Brave Safe Storage** in the keychain, which
-  Brave needs to decrypt your cookies.
-- **The copy holds your cookies and saved logins.** Keep it outside the
-  project, and don't commit or share it.
+| `connectToRunningBrave()` | Connects to the Brave you have open. `Browser` uses it. |
 
 ### Open pages
 
@@ -361,6 +331,7 @@ page navigates or reloads.
 | Method | Finds the element whose… |
 | --- | --- |
 | `page.findById(id)` | `id` attribute is `id`. |
+| `page.findByTestId(testId)` | `data-testid` attribute is `testId`. |
 | `page.findByText(text, { exact })` | Visible text is `text`. |
 | `page.findByPlaceholderText(text, { exact })` | `placeholder` attribute is `text`. |
 | `page.findByRole(role, { name, exact })` | ARIA role is `role`, such as `button` or `textbox`, and whose label is `name`. |
@@ -500,6 +471,183 @@ await generateText({
 Both flows need a profile that's logged in to Reddit. They depend on Reddit's
 current page structure and labels, so they break when Reddit changes them.
 
+## Run workflows
+
+`lib/workflow.js` runs multi-step jobs in your app and reports each step's
+status to the workflow server in `workflow/server/`, so you can watch runs in
+the web app and retry failed ones. A _workflow_ is a named callback made of
+labeled _steps_. Each time it runs, it creates a _run_ with its own event and
+step results.
+
+### Quick start
+
+1. Create a `Workflow`, add a workflow with `create()`, and mount `serve()` in
+   your Express app:
+
+   ```js
+   import express from "express";
+   import Workflow from "../lib/workflow.js";
+
+   const workflow = new Workflow({ id: "my-app" });
+
+   await workflow.create(
+     {
+       id: "fetch-title",
+       triggers: { event: { type: "event/fetch-title" } },
+     },
+     async ({ event, step }) => {
+       const html = await step("download", async () => {
+         const res = await fetch(event.data.url);
+         return res.text();
+       });
+
+       const title = await step("parse title", async () => {
+         return html.match(/<title>(.*?)<\/title>/)?.[1] ?? null;
+       });
+
+       return { title };
+     },
+   );
+
+   const app = express();
+   app.use("/api/workflow", workflow.serve());
+   app.listen(3001);
+   ```
+
+2. Start the workflow server, your app, and the web app:
+
+   ```bash
+   npm run dev
+   ```
+
+   The workflow server listens on port 3000 and syncs with
+   `http://localhost:3001/api/workflow` by default. `app/index.js` is a
+   working example app.
+
+3. Start a run. Either click the workflow's start control in the web app, or
+   send its trigger event to your app:
+
+   ```bash
+   curl -X POST http://localhost:3001/api/workflow \
+     -H "Content-Type: application/json" \
+     -d '{"type": "event/fetch-title", "data": {"url": "https://example.com"}}'
+   ```
+
+   The app responds `202` right away, and the run's steps appear in the web
+   app as they start and finish.
+
+### How a run works
+
+- **Steps run in order and save their results.** `step(label, callback)`
+  runs `callback`, records its status (`running`, `finished`, or `error`),
+  and resolves with its return value.
+- **A failed step doesn't throw.** If `callback` throws, `step()` resolves
+  with `undefined`, the run's status becomes `error`, and every later step is
+  recorded as `skipped` without running. Code between steps still runs, so
+  guard against `undefined` values there.
+- **A retry resumes where the run failed.** Finished steps return their
+  saved result without running again. The failed step and the steps after it
+  run again, under the same run ID.
+- **Runs are independent.** Several runs of one workflow can run at the same
+  time. Each gets its own `event` and step results.
+
+### Write the workflow callback
+
+The callback receives `{ event, step }` and can return a value, which becomes
+the run's result.
+
+Follow these rules:
+
+- **Put side effects inside steps.** `create()` calls the callback once,
+  with `event: null`, to find its step labels. During that call `step()`
+  doesn't run anything and returns `undefined`. Code outside steps also runs
+  again on every retry.
+- **Give each step a unique, fixed label.** The label identifies the step in
+  the web app and on retry. A second `step()` with a label that already
+  finished in this run returns the first result instead of running.
+- **Return JSON-serializable values from steps.** The workflow server stores
+  step results as JSON and sends them back on retry, so a `Page`, a
+  `Browser`, or a class instance doesn't survive. Return plain data, such as
+  a URL or HTML.
+- **Open and close resources in the same step.** For example, connect a
+  `Browser` inside a step and close it in that step's `finally` block.
+
+### Start runs
+
+| Method | What it does |
+| --- | --- |
+| `workflow.run({ id, event })` | Starts a run of the workflow `id` and resolves with its status when the run ends. |
+| `workflow.send({ event })` | Starts a run of every workflow whose trigger matches `event.type`. Resolves with an array of statuses. |
+| `workflow.match({ event })` | Returns the IDs of the workflows whose trigger matches `event.type`, without starting them. |
+| `workflow.retry({ runId, workflowId, event, steps })` | Resumes a failed run. The workflow server calls this for you through `serve()`. |
+
+An event is `{ type, data }`. A workflow matches when
+`triggers.event.type` equals the event's `type`.
+
+The status that `run()` and `retry()` resolve with looks like this:
+
+```js
+{
+  runId: "…",          // undefined if the workflow server didn't record the run
+  workflowId: "fetch-title",
+  status: "finished",  // or "error"
+  result: { title: "Example Domain" },
+  error: undefined,    // the message, if the callback itself threw
+  steps: [
+    { label: "download", status: "finished", error: undefined, startedAt: 1761300000000, finishedAt: 1761300000400 },
+    { label: "parse title", status: "finished", error: undefined, startedAt: 1761300000400, finishedAt: 1761300000401 },
+  ],
+}
+```
+
+### Connect to the workflow server
+
+`serve()` returns an Express router. Mount it at any path, for example
+`/api/workflow`, and add that full URL to `WORKFLOW_APP_URLS` on the workflow
+server. Separate several URLs with commas. The workflow server calls the
+router every five seconds to sync, and the router registers the URL that the
+request reached, so you don't configure your app's own URL.
+
+The router handles these requests:
+
+| Request | What it does |
+| --- | --- |
+| `PUT /` | Registers every workflow, its triggers, and its step labels with the workflow server. |
+| `POST /` with `{ type, data, workflowId? }` | Starts a run of each workflow that the event triggers, or only of `workflowId`. Responds `202` with the workflow IDs. |
+| `POST /runs/:runId/retry` with `{ workflowId, event, steps }` | Resumes a failed run. Responds `202`, or `409` if that run is already running. |
+
+If the workflow server can't reach your app at the URL the sync request
+reached, such as behind a proxy or in a container, override parts of it:
+
+| Option | Environment variable | Example | Replaces |
+| --- | --- | --- | --- |
+| `serveHost` | `WORKFLOW_SERVE_HOST` | `https://myapp.com` | The protocol and host of the request. |
+| `servePath` | `WORKFLOW_SERVE_PATH` | `/api/workflow` | The path the router is mounted at. |
+
+An option takes precedence over its environment variable:
+
+```js
+app.use(
+  "/api/workflow",
+  workflow.serve({ serveHost: "https://myapp.com" }),
+);
+```
+
+### Configure
+
+| Variable | Where | Default | Description |
+| --- | --- | --- | --- |
+| `API_URL` | Your app | `http://localhost:3000` | The workflow server that `lib/workflow.js` reports runs and steps to. |
+| `WORKFLOW_APP_URLS` | Workflow server | `http://localhost:3001/api/workflow` | The URLs where apps mounted `serve()`, separated by commas. |
+| `WORKFLOW_SERVE_HOST` | Your app | The request's host | See [Connect to the workflow server](#connect-to-the-workflow-server). |
+| `WORKFLOW_SERVE_PATH` | Your app | The mount path | See [Connect to the workflow server](#connect-to-the-workflow-server). |
+
+### When the workflow server is down
+
+Runs still work without the workflow server. Each failed report logs a
+warning and the run continues. Those runs have no run ID, so they don't
+appear in the web app and you can't retry them.
+
 ## Files
 
 | File | Purpose |
@@ -507,10 +655,13 @@ current page structure and labels, so they break when Reddit changes them.
 | `extractor.js` | `createClient`, the schema builder, selector discovery, field resolution, and the save functions. |
 | `lib/ai-sdk.js` | `createAI(model)`: the `AI` implementation for AI SDK language models. |
 | `browser/index.js` | Headless Chromium page loading for the extractor: Puppeteer locally, `@sparticuz/chromium-min` on Linux and serverless. |
-| `lib/chrome.js` | `CDPConnection`, plus functions to connect to a running browser and to copy a Brave profile. |
-| `lib/browser.js` | `Browser`: launches and closes Brave, and opens tabs with `goto`. |
+| `lib/chrome.js` | `CDPConnection`, plus functions to connect to a running browser. |
+| `lib/browser.js` | `Browser`: connects to the Brave you have open, and opens tabs with `goto`. |
 | `lib/page.js` | `Page`: finds elements, clicks, types, and waits in one tab. |
 | `lib/flow.js` | `defineFlow`, `step`, `toTools`, and `FlowError`. |
+| `lib/workflow.js` | `Workflow`: defines workflows, runs and retries them, and reports their steps to the workflow server. |
+| `workflow/server/` | The workflow server: stores workflows, runs, and steps, and syncs with apps. |
+| `workflow/web/` | The web app that shows runs and steps, and starts and retries runs. |
 | `flows/reddit/` | The Reddit flows. |
 | `index.js` | Runs the `reddit_create_post` flow in Brave. The DeepSeek extraction workflow is commented out. |
 

@@ -12,18 +12,52 @@ import * as db from "./db.js";
 //   to a `start` message.
 // - { type: "retry-result", requestId, runId, ok, error? }: the answer to a
 //   `retry` message.
+// - { type: "delete-result", requestId, workflowId, ok, error? }: the answer
+//   to a `delete` message.
+// - { type: "delete-run-result", requestId, runId, ok, error? }: the answer
+//   to a `delete-run` message.
 //
 // Client to server:
 // - { type: "start", requestId, workflowId }: starts a new run of the
 //   workflow. `requestId` is any value the client uses to match the answer.
 // - { type: "retry", requestId, runId }: resumes a failed run.
+// - { type: "delete", requestId, workflowId }: deletes the workflow with its
+//   runs.
+// - { type: "delete-run", requestId, runId }: deletes the run with its steps.
 let wss = null;
+
+// Deletes the workflow with its runs. Refuses while a run is running, since
+// its app would keep reporting steps of a run that no longer exists.
+async function deleteWorkflow(workflowId) {
+  const runs = await db.listRuns(workflowId);
+  if (runs.some(({ status }) => status === "running")) {
+    throw new Error("Wait for the running run to finish, then delete.");
+  }
+  if (!(await db.deleteWorkflow(workflowId))) {
+    throw new Error(`Unknown workflow: ${workflowId}`);
+  }
+  broadcastWorkflows().catch((error) => console.error(error));
+}
+
+// Deletes the run with its steps. Refuses while it's running, for the same
+// reason as deleteWorkflow.
+async function deleteRun(runId) {
+  const run = await db.getRun(runId);
+  if (!run) throw new Error(`Unknown run: ${runId}`);
+  if (run.status === "running") {
+    throw new Error("Wait for the run to finish, then delete it.");
+  }
+  await db.deleteRun(runId);
+  broadcastWorkflows().catch((error) => console.error(error));
+}
 
 // Client message types, with the function that handles each and the field
 // that names its target.
 const ACTIONS = {
   start: [startWorkflow, "workflowId"],
   retry: [retryRun, "runId"],
+  delete: [deleteWorkflow, "workflowId"],
+  "delete-run": [deleteRun, "runId"],
 };
 
 function send(socket, message) {

@@ -1,7 +1,7 @@
-const { z } = require("zod");
-const { defineFlow } = require("../../lib/flow");
+import { z } from "zod";
+import { defineFlow } from "../../lib/flow.js";
 
-module.exports = defineFlow({
+export default defineFlow({
   name: "reddit_open_post_editor",
   description:
     "Opens the editor for a new Reddit post. Starts from any Reddit page while you're logged in. Ends with the editor's title field ready.",

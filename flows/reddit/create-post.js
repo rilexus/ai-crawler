@@ -1,8 +1,8 @@
-const { z } = require("zod");
-const { defineFlow } = require("../../lib/flow");
-const openPostEditor = require("./open-post-editor");
+import { z } from "zod";
+import { defineFlow } from "../../lib/flow.js";
+import openPostEditor from "./open-post-editor.js";
 
-module.exports = defineFlow({
+export default defineFlow({
   name: "reddit_create_post",
   description:
     "Writes a text post on a specific subreddit on Reddit and, if `publish` is true, publishes it. Starts from any Reddit page while you're logged in.",

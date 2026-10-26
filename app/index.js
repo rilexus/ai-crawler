@@ -1,5 +1,7 @@
 import express from "express";
+import Browser from "../lib/browser.js";
 import Workflow from "../lib/workflow.js";
+import { createPost } from "../flows/x/create-post.js";
 
 // The workflow server in workflow/server/index.js uses port 3000.
 const PORT = Number(process.env.APP_PORT) || 3001;
@@ -42,16 +44,32 @@ await workflow.create(
 
 await workflow.create(
   {
-    id: "second-workflow",
-    triggers: { event: { type: "event/start-second-workflow" } },
+    id: "create-twitter-posts",
+    triggers: { event: { type: "event/start-collect-x-posts" } },
   },
   async ({ step }) => {
-    const some = await step("first", async () => {
-      await sleep(2000);
-      return 1;
+    let browser = null;
+
+    await step("open browser", async () => {
+      browser = await new Browser().connect();
+      return true;
     });
 
-    return some;
+    let page = null;
+    await step("navigate", async () => {
+      page = await browser.goto("https://www.x.com");
+      return true;
+    });
+
+    await step("create post", async () => {
+      await createPost(page, { text: "hello world!" });
+    });
+
+    await step("close browser", async () => {
+      if (browser) {
+        await browser.close();
+      }
+    });
   },
 );
 

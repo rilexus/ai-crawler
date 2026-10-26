@@ -8,7 +8,9 @@ const MAX_RETRY_DELAY = 10_000;
 //
 // `workflows` is null until the first list arrives. `connection` is
 // "connecting", "open", or "closed". `start(workflowId)` asks the server to
-// start a new run, and `retry(runId)` to resume a failed one. Each resolves
+// start a new run, `retry(runId)` to resume a failed one, and
+// `remove(workflowId)` to delete a workflow with its runs, and
+// `removeRun(runId)` to delete one run. Each resolves
 // once the app accepts the request, and rejects with the server's error
 // message.
 export default function useWorkflows() {
@@ -45,7 +47,9 @@ export default function useWorkflows() {
         setWorkflows(message.workflows);
       } else if (
         message.type === "start-result" ||
-        message.type === "retry-result"
+        message.type === "retry-result" ||
+        message.type === "delete-result" ||
+        message.type === "delete-run-result"
       ) {
         const request = pending.current.get(message.requestId);
         if (!request) return;
@@ -95,6 +99,14 @@ export default function useWorkflows() {
     (runId) => request({ type: "retry", runId }),
     [request],
   );
+  const remove = useCallback(
+    (workflowId) => request({ type: "delete", workflowId }),
+    [request],
+  );
+  const removeRun = useCallback(
+    (runId) => request({ type: "delete-run", runId }),
+    [request],
+  );
 
-  return { workflows, connection, reconnect, start, retry };
+  return { workflows, connection, reconnect, start, retry, remove, removeRun };
 }

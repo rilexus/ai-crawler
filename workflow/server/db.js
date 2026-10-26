@@ -167,6 +167,40 @@ export async function upsertWorkflow(
   return { workflow: await getWorkflow(id), changed: changes > 0 };
 }
 
+// Deletes the workflow with its runs and their steps. Returns whether the
+// workflow existed.
+export async function deleteWorkflow(id) {
+  await run("BEGIN");
+  try {
+    await run(
+      `DELETE FROM steps
+       WHERE run_id IN (SELECT id FROM runs WHERE workflow_id = ?)`,
+      [id],
+    );
+    await run("DELETE FROM runs WHERE workflow_id = ?", [id]);
+    const { changes } = await run("DELETE FROM workflows WHERE id = ?", [id]);
+    await run("COMMIT");
+    return changes > 0;
+  } catch (error) {
+    await run("ROLLBACK");
+    throw error;
+  }
+}
+
+// Deletes the run with its steps. Returns whether the run existed.
+export async function deleteRun(id) {
+  await run("BEGIN");
+  try {
+    await run("DELETE FROM steps WHERE run_id = ?", [id]);
+    const { changes } = await run("DELETE FROM runs WHERE id = ?", [id]);
+    await run("COMMIT");
+    return changes > 0;
+  } catch (error) {
+    await run("ROLLBACK");
+    throw error;
+  }
+}
+
 // Returns the distinct app URLs that workflows registered.
 export async function listAppUrls() {
   const rows = await all(

@@ -80,3 +80,8 @@ Keep a feature's backend and frontend together in one folder:
 
 - **Flow:** Add it under `flows/<site>/`, using `defineFlow` from
   `lib/flow.js`.
+- **Browser in a workflow:** Connect `Browser` from `lib/browser.js` inside a
+  `step()` and close it in a `finally` block in that step. It attaches to
+  the Brave you have open; don't start a new browser or copy a profile. A retry skips
+  finished steps, so a browser can't carry over to the next step. Return
+  JSON-serializable values such as the page URL, not the `Page`.

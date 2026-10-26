@@ -101,16 +101,13 @@ export async function retryRun(runId) {
     throw new Error("Only a failed run can be retried.");
   }
   const workflow = await getSyncedWorkflow(run.workflowId);
-  return postToApp(
-    `${workflow.url}/runs/${encodeURIComponent(runId)}/retry`,
-    {
-      workflowId: run.workflowId,
-      event: run.event,
-      steps: run.steps.map(({ label, status, result }) => ({
-        label,
-        status,
-        result,
-      })),
-    },
-  );
+  return postToApp(`${workflow.url}/runs/${encodeURIComponent(runId)}/retry`, {
+    workflowId: run.workflowId,
+    event: run.event,
+    steps: run.steps.map(({ label, status, result }) => ({
+      label,
+      status,
+      result,
+    })),
+  });
 }

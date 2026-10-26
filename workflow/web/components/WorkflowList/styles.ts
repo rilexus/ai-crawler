@@ -78,6 +78,8 @@ export const List = styled.ul`
 `;
 
 export const Actions = styled.div`
+  display: flex;
+  gap: 0.5rem;
   flex-shrink: 0;
   padding-inline-end: 1rem;
 `;
@@ -104,7 +106,7 @@ export const Row = styled.li<{ $selected?: boolean }>`
     ${({ $selected }) =>
       !$selected &&
       css`
-        &:not(:hover, :focus-within) ${Actions} {
+        &:not(:hover, :focus-within) > ${Actions} {
           opacity: 0;
         }
       `}
@@ -258,4 +260,37 @@ export const Button = styled.button`
 
 export const BackButton = styled(Button)`
   margin-bottom: 0.5rem;
+`;
+
+// Confirms an action that can't be undone, in the error color so it doesn't
+// look like the safe choice.
+export const DestructiveButton = styled(Button)`
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  background: var(--color-error-bg);
+  color: var(--color-error);
+
+  &:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+`;
+
+// Asks to confirm a delete, on its own line below the row like RowStatus.
+export const Confirmation = styled.div`
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  padding: 0 1rem 0.75rem;
+
+  & > p {
+    flex: 1 1 16rem;
+    margin: 0;
+  }
+
+  & > ${Actions} {
+    padding-inline-end: 0;
+  }
 `;

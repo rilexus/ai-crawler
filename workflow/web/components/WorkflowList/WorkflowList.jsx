@@ -5,6 +5,8 @@ import {
   Banner,
   Button,
   COMPACT_QUERY,
+  Confirmation,
+  DestructiveButton,
   Details,
   ErrorMessage,
   ErrorText,
@@ -199,8 +201,77 @@ function RunDetail({ workflowId, labels, run, stale, canRetry, retry }) {
   );
 }
 
-function RunRow({ run, labels, selected, select, buttonRef }) {
+// A row's Delete button and its confirmation. `remove()` deletes the row's
+// record; on success, the row goes away with it. Returns `deleteRef` for
+// the Delete button, `confirming`, `error`, and handlers `ask`, `confirm`,
+// and `cancel`.
+function useDelete(remove) {
+  // null, or { status: "confirming" | "deleting" | "error", message? }
+  const [state, setState] = useState(null);
+  const deleteRef = useRef(null);
+
+  return {
+    deleteRef,
+    confirming: state?.status === "confirming" || state?.status === "deleting",
+    deleting: state?.status === "deleting",
+    error: state?.status === "error" ? state.message : null,
+    ask: () => setState({ status: "confirming" }),
+    confirm: () => {
+      setState({ status: "deleting" });
+      remove().catch((error) =>
+        setState({ status: "error", message: error.message }),
+      );
+    },
+    cancel: () => {
+      setState(null);
+      deleteRef.current?.focus();
+    },
+  };
+}
+
+// Asks before deleting, since a delete can't be undone. Focus moves to
+// Cancel, the safe choice, and Escape cancels. `children` is the question.
+function DeleteConfirmation({ label, deleting, confirm, cancel, children }) {
+  const cancelRef = useRef(null);
+
+  useEffect(() => {
+    cancelRef.current?.focus();
+  }, []);
+
+  return (
+    <Confirmation
+      role="group"
+      aria-label={label}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") cancel();
+      }}
+    >
+      <Meta as="p">{children}</Meta>
+      <Actions>
+        <DestructiveButton type="button" onClick={confirm} disabled={deleting}>
+          {deleting ? "Deleting…" : "Delete"}
+        </DestructiveButton>
+        <Button ref={cancelRef} type="button" onClick={cancel}>
+          Cancel
+        </Button>
+      </Actions>
+    </Confirmation>
+  );
+}
+
+function RunRow({
+  run,
+  labels,
+  selected,
+  select,
+  buttonRef,
+  connected,
+  remove,
+}) {
   const runProgress = progress(labels, run);
+  const deletion = useDelete(() => remove(run.id));
+  const label = `Delete the run started ${dateFormat.format(run.startedAt)}`;
+
   return (
     <Row $selected={selected}>
       <SelectButton
@@ -215,6 +286,31 @@ function RunRow({ run, labels, selected, select, buttonRef }) {
         </Meta>
         <StepStatus $status={run.status}>{statusLabel(run.status)}</StepStatus>
       </SelectButton>
+      <Actions>
+        <Button
+          ref={deletion.deleteRef}
+          type="button"
+          onClick={deletion.ask}
+          disabled={!connected}
+          aria-label={label}
+          aria-expanded={deletion.confirming}
+        >
+          Delete
+        </Button>
+      </Actions>
+      <RowStatus role="status">
+        {deletion.error && <ErrorText>{deletion.error}</ErrorText>}
+      </RowStatus>
+      {deletion.confirming && (
+        <DeleteConfirmation
+          label={label}
+          deleting={deletion.deleting}
+          confirm={deletion.confirm}
+          cancel={deletion.cancel}
+        >
+          Delete this run and its step results? You can't undo this.
+        </DeleteConfirmation>
+      )}
     </Row>
   );
 }
@@ -229,10 +325,12 @@ function WorkflowRow({
   connected,
   start,
   waiting,
+  remove,
 }) {
   const { id, triggers, url, updatedAt } = workflow;
   // null, or { status: "starting" | "error", message? }
   const [startState, setStartState] = useState(null);
+  const deletion = useDelete(() => remove(id));
 
   const handleStart = () => {
     setStartState({ status: "starting" });
@@ -268,19 +366,44 @@ function WorkflowRow({
         >
           {startState?.status === "starting" ? "Starting…" : "Start"}
         </Button>
+        <Button
+          ref={deletion.deleteRef}
+          type="button"
+          onClick={deletion.ask}
+          disabled={!connected}
+          aria-label={`Delete ${id}`}
+          aria-expanded={deletion.confirming}
+        >
+          Delete
+        </Button>
       </Actions>
       <RowStatus role="status">
         {waiting && <Meta>Run started. Opening it…</Meta>}
         {startState?.status === "error" && (
           <ErrorText>{startState.message}</ErrorText>
         )}
+        {deletion.error && <ErrorText>{deletion.error}</ErrorText>}
       </RowStatus>
+      {deletion.confirming && (
+        <DeleteConfirmation
+          label={`Delete ${id}`}
+          deleting={deletion.deleting}
+          confirm={deletion.confirm}
+          cancel={deletion.cancel}
+        >
+          Delete {id}
+          {workflow.runs.length > 0 && " and all its runs"}? You can't undo
+          this. If its app still defines the workflow, the next sync adds it
+          back without runs.
+        </DeleteConfirmation>
+      )}
     </Row>
   );
 }
 
 export default function WorkflowList() {
-  const { workflows, connection, reconnect, start, retry } = useWorkflows();
+  const { workflows, connection, reconnect, start, retry, remove, removeRun } =
+    useWorkflows();
   // IDs rather than objects, so the panes show each update from the server.
   const [selection, select, back] = useSelection();
   const { workflowId: selectedWorkflowId, runId: selectedRunId } = selection;
@@ -330,6 +453,21 @@ export default function WorkflowList() {
       navigate({ workflowId: id, runId: null });
     });
   };
+
+  // A deleted workflow's or run's row goes away, so focus moves to the
+  // heading of its pane.
+  const deleteWorkflow = (id) =>
+    remove(id).then(() => {
+      if (id === selectedWorkflowId) select({ workflowId: null, runId: null });
+      headings.workflows.current?.focus();
+    });
+  const deleteRun = (id) =>
+    removeRun(id).then(() => {
+      if (id === selectedRunId) {
+        select({ workflowId: selectedWorkflowId, runId: null });
+      }
+      headings.runs.current?.focus();
+    });
 
   // Opens the new run once it appears, unless the person selected something
   // else in the meantime.
@@ -417,6 +555,7 @@ export default function WorkflowList() {
             connected={connected}
             start={startRun}
             waiting={pendingStart?.workflowId === workflow.id}
+            remove={deleteWorkflow}
           />
         ))}
       </List>
@@ -443,6 +582,8 @@ export default function WorkflowList() {
             selected={run.id === selectedRunId}
             select={() => selectRun(run.id)}
             buttonRef={rowRef(`run:${run.id}`)}
+            connected={connected}
+            remove={deleteRun}
           />
         ))}
       </List>
